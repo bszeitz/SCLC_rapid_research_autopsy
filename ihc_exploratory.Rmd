@@ -1,0 +1,2143 @@
+---
+title: "IHC data analysis"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+source("helpers/load_packages.R")
+```
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+
+
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+sample_annot_for_ihc = unique(sample_annot_withrepl[sample_annot_withrepl$type!="ctrl",c("patient", "sample_id",
+                                                       "origin","type","sample_group")])
+sample_annot_for_ihc$rnaseq_consensus_subtype = sapply(sample_annot_for_ihc$sample_id, function(x){
+  subtypes = na.omit(unique(sample_annot_withrepl[sample_annot_withrepl$tumor_id == x,"rnaseq_consensus_subtype"]))
+  if(!is.null(subtypes)){
+    return(paste(subtypes[order(subtypes)], collapse = ","))
+  } else {
+    return("")
+  }
+})
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/ihc.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+
+nrow(ihc)
+ihc$tumor_id = gsub("_1|_2|_3|_4|_5|_6","",ihc$ihc_sample_id)
+ihc$slide = sapply(ihc$ihc_sample_id, function(x){
+  elemnts = strsplit(x,split="_")[[1]]
+  return(elemnts[length(elemnts)])
+})
+
+ihc = merge(ihc, sample_annot_for_ihc,
+            by.x="tumor_id", by.y="sample_id")
+
+
+```
+
+
+
+
+
+```{r }
+
+prot_expr <- prot_expr_1_cleaned_nooutliers
+rna_expr_unfilt <- rnaseq$full
+
+#prot_filt_imp <- proteomics$filt90_imp
+rna_expr_filt <- rnaseq$filt_log2
+
+#prot_batchcorr_filt_imp <- proteomics$batchcorr_filt90_imp
+
+
+sample_annot_rna = sample_annot_withrepl[!is.na(sample_annot_withrepl$rnaseq),]
+row.names(sample_annot_rna) = sample_annot_rna$replicate_id
+
+sample_annot_prot = sample_annot_withrepl[sample_annot_withrepl$cohort=="cohort1" &
+                                            !is.na(sample_annot_withrepl$proteomics),]
+row.names(sample_annot_prot) = sample_annot_prot$replicate_id
+
+```
+
+```{r }
+#subtype_markers$rna
+
+sample_annot_rna <- cbind(sample_annot_rna, t(single_sample_scores_rnaseq[,row.names(sample_annot_rna)]))
+sample_annot_rna$ascl1_gene<- rna_expr_unfilt["ENSG00000139352",row.names(sample_annot_rna)]
+sample_annot_rna$neurod1_gene <- rna_expr_unfilt["ENSG00000162992",row.names(sample_annot_rna)]
+sample_annot_rna$pou2f3_gene <- rna_expr_unfilt["ENSG00000137709",row.names(sample_annot_rna)]
+sample_annot_rna$yap1_gene <- rna_expr_unfilt["ENSG00000137693",row.names(sample_annot_rna)]
+sample_annot_rna$dll3_gene <- rna_expr_unfilt["ENSG00000090932",row.names(sample_annot_rna)]
+sample_annot_rna$b7_h3_gene <- rna_expr_unfilt["ENSG00000103855",row.names(sample_annot_rna)] # CD276 
+sample_annot_rna$pd_l1_gene <- rna_expr_unfilt["ENSG00000120217",row.names(sample_annot_rna)] # CD274
+
+#subtype_markers$prot
+
+#sample_annot_prot <- cbind(sample_annot_prot, t(sample_scores$prot[,row.names(sample_annot_prot)]))
+sample_annot_prot$ascl1_prot <- as.numeric(prot_expr["P50553",row.names(sample_annot_prot)])
+sample_annot_prot$neurod1_prot <- as.numeric(prot_expr["Q13562",row.names(sample_annot_prot)])
+sample_annot_prot$pou2f3_prot <- NA
+#sample_annot_prot$insm1_prot <- as.numeric(prot_expr["Q01101",row.names(sample_annot_prot)])
+#sample_annot_prot$igf1r_prot <- as.numeric(prot_expr["P08069",row.names(sample_annot_prot)])
+sample_annot_prot$yap1_prot <- as.numeric(prot_expr["P46937;P46937-9",row.names(sample_annot_prot)])
+sample_annot_prot$dll3_prot <- as.numeric(prot_expr["Q9NYJ7;Q9NYJ7-2",row.names(sample_annot_prot)])
+sample_annot_prot$b7_h3_prot <- as.numeric(prot_expr["Q5ZPR3",row.names(sample_annot_prot)])
+sample_annot_prot$pd_l1_prot <- NA
+
+
+```
+
+
+
+```{r }
+ihc_matrix <- ihc[,grep("ascl1|neurod1|yap1|pou2f|cd3|b7|pd|dll3",colnames(ihc))]
+row.names(ihc_matrix) <- ihc$ihc_sample_id
+
+ihc_matrix_filt <- t(filter_missingvalues(ihc_matrix, 50))
+
+h_scores <- ihc[,grep("h_score",colnames(ihc))]
+row.names(h_scores) <- ihc$ihc_sample_id
+
+#h_scores$cd3_intra <- h_scores$cd3_intra * 100
+#h_scores$cd3_peri <- h_scores$cd3_peri * 100
+
+h_scores_filt <- t(filter_missingvalues(h_scores[,grep("ascl1|neurod1|yap1|pou2f",colnames(h_scores))], 100)) # it only makes sense to take the samples where all h-scores are present
+
+
+```
+
+
+# Correlation btw marker expressions
+
+
+
+```{r , fig.width=10, fig.height=10}
+
+#PerformanceAnalytics::chart.Correlation(ihc_matrix[,grepl("_h_score|cd3_", colnames(ihc_matrix))], method = "spearman")
+chart.Correlation.linear(ihc_matrix[,grepl("_h_score", colnames(ihc_matrix))], method = "spearman")
+#PerformanceAnalytics::chart.Correlation(ihc_matrix[,c(grep("cd3_", colnames(ihc_matrix)),
+#                                                    grep("_perc", colnames(ihc_matrix)))], method = "spearman")
+
+
+export_heatmap_png(filename = "figs/h_score_correlations", 
+                   width = 10, height=10,
+                   ht_object=chart.Correlation.linear(ihc_matrix[,grepl("_h_score",
+                                                                        colnames(ihc_matrix))],
+                                                      method = "spearman"), 
+                   not_heatmap = TRUE)
+
+
+
+```
+
+
+
+```{r , fig.width=4, fig.height=7}
+
+ggbarstats(
+  data  = ihc, 
+  x     = cd3_intra, 
+  y     = cd3_peri, 
+  label = "both", 
+  results.subtitle = FALSE,
+)
+
+
+#export_heatmap_png(filename = "figs/cd3_intra_vs_peri", 
+#                   width = 4, height=7,
+#                   ht_object=ggbarstats(
+#                     data  = ihc, 
+#                     x     = cd3_intra, 
+#                     y     = cd3_peri, 
+#                     label = "both", 
+#                     results.subtitle = FALSE,
+#                   ), 
+#                   not_heatmap = TRUE)
+
+```
+
+```{r , fig.width=15, fig.height=15}
+
+h_score_list <- c("ascl1_h_score",
+              "neurod1_h_score",
+              "pou2f3_h_score",
+              "yap1_h_score",
+              "pd_l1_h_score",
+              "dll3_h_score",
+              "b7_h3_h_score")
+
+g_list <- list()
+
+i=1
+for (i in 1:length(h_score_list)){
+  
+  df <- data.frame(cd3_intra=ihc[,"cd3_intra"],
+                   cd3_peri=ihc[,"cd3_peri"],
+                   h_score = ihc[,h_score_list[i]])
+  
+  p1 <- ggplot(df[!is.na(df$cd3_intra)&!is.na(df$h_score),], 
+         aes(x=factor(cd3_intra), y=h_score))+
+    geom_boxplot()+stat_pwc(label = "p.adj",p.adjust.method = "none")+
+    stat_compare_means()+
+    geom_violin(alpha=0.5)+theme_classic()+
+    ggtitle(paste0("cd3_intra vs ",h_score_list[i]))+ylab(h_score_list[i])
+  
+  p2 <- ggplot(df[!is.na(df$cd3_peri)&!is.na(df$h_score),], 
+         aes(x=factor(cd3_peri), y=h_score))+
+    geom_boxplot()+stat_pwc(label = "p.adj",p.adjust.method = "none")+
+    stat_compare_means()+
+    geom_violin(alpha=0.5)+theme_classic()+
+    ggtitle(paste0("cd3_peri vs ",h_score_list[i]))+ylab(h_score_list[i])
+  
+  g_list <- append(g_list,
+                   list(p1))
+  g_list <- append(g_list,
+                   list(p2))
+  
+}
+
+
+ggarrange(plotlist = g_list, ncol=4, nrow=4)
+
+#ggsave("figs/cd3_vs_hscore.png")
+#ggsave("figs/cd3_vs_hscore.svg")
+#ggsave("figs/cd3_vs_hscore.pdf")
+
+
+```
+
+# Heatmap with all data & dotplot overview
+
+```{r , fig.width=25, fig.height=7}
+
+h_scores_patient_data <- ihc
+row.names(h_scores_patient_data) <- h_scores_patient_data$ihc_sample_id
+
+h_scores_imputed <- t(ihc[,grepl("h_score",colnames(ihc))])
+h_scores_imputed[is.na(h_scores_imputed)] <- -1
+colnames(h_scores_imputed) <- ihc$ihc_sample_id
+
+ht = draw(Heatmap(h_scores_imputed, 
+        name="H-score",
+        cluster_columns = TRUE,
+        cluster_rows = TRUE,
+        
+        top_annotation = HeatmapAnnotation(df=h_scores_patient_data[colnames(h_scores_imputed),
+                                                                 c("cd3_intra", "cd3_peri")],
+                                           border = TRUE,
+                                           gp = gpar(col = "lightgray"),
+                                           col = colorlist),
+        #column_split = km$cluster[colnames(h_scores_filt)],
+        column_names_gp = gpar(fontsize = 9),
+        #rect_gp = gpar(col = "white"),
+        col = colorRamp2(c(-1,0, 50,75, 100,200,300), 
+                         c("gray","black","navyblue","lightblue","white", "orange","red"))),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+
+
+
+
+```
+
+
+
+```{r }
+
+ihc_melted <- melt(ihc, id.vars = c("ihc_sample_id", "tumor_id","slide",
+                                         "patient", 
+                                         "rnaseq_consensus_subtype", "origin", "type",
+                                         "sample_group"))
+ihc_melted <- ihc_melted[grepl("h_score|cd3",ihc_melted$variable),]
+
+
+ihc_melted$ihc_id <- ihc_melted$slide #sapply(seq(1,nrow(ihc_melted)), function(x){
+  
+#  gsub(paste0(ihc_melted$tumor_id[x],"_"), "",ihc_melted$ihc_sample_id[x])
+  
+#})
+
+
+ihc_melted$tumor_id <- gsub("KSCLC_","",paste(ihc_melted$tumor_id, ihc_melted$rnaseq_consensus_subtype, sep=" - "))
+ihc_melted$tumor_id <- gsub("equivocal","eq.",ihc_melted$tumor_id)
+
+
+ihc_melted$int <- sapply(seq(1,nrow(ihc_melted)), function(x){
+  
+  if (grepl("cd3",ihc_melted$variable[x])){
+    
+    if (is.na(ihc_melted$value[x])){
+      return(NA)
+    }
+    
+    if (ihc_melted$value[x] ==0){
+      return(0)
+    } else if (ihc_melted$value[x] ==1){
+      return(33)
+    } else if (ihc_melted$value[x] ==2){
+      return(66)
+    } else if (ihc_melted$value[x] ==3){
+      return(100)
+    }
+    
+    
+  } else {
+    return(ihc_melted$value[x])
+  }
+  
+})
+
+
+ihc_melted$marker_type <- ifelse(grepl("cd3",ihc_melted$variable), "CD3", "subtype (ANPY)")
+
+
+types <- unique(ihc_melted$sample_group)
+types <- types[order(types)]
+types <- types[c(grep("prim",types),grep("met",types))]
+
+ihc_melted$sample_group <- factor(ihc_melted$sample_group, levels = c(types))
+
+ihc_melted$value_corrected <- ifelse(ihc_melted$marker_type=="CD3",
+                                     ihc_melted$int,
+                                     ihc_melted$value)
+
+ihc_melted$int <- ifelse(ihc_melted$marker_type=="CD3",
+                         3,1)
+
+```
+
+
+```{r , fig.width=12, fig.height=15} 
+
+ihc_melted$value_corrected = as.numeric(ihc_melted$value_corrected)
+ihc_melted$int = as.numeric(ihc_melted$int)
+
+ggplot(ihc_melted[grep("_h_score|cd3_",ihc_melted$variable),], 
+       aes(x= ihc_id, 
+           y=value_corrected, 
+           color=variable, 
+           size=int, 
+           shape = marker_type))+
+  geom_point(position = position_jitter(width = 0.2, height = 0),alpha=0.8)+
+  #facet_wrap(vars(tumor_id), ncol=7, scales = "free_x")+ 
+  scale_size(range = c(3,5))+
+  scale_shape_manual(values=c(13,20))+
+  theme_bw()+
+  scale_color_manual(values=setNames(c("darkblue", 
+                              "darkgreen", 
+                              "darkred", 
+                              "gold",
+                              "darkorange", 
+                              "lightblue",
+                              "lightgreen",
+                              "pink",
+                              "violet"),
+                     c("ascl1_h_score",
+                             "neurod1_h_score",
+                             "pou2f3_h_score",
+                             "yap1_h_score",
+                             "cd3_intra",
+                             "cd3_peri",
+                             "dll3_h_score",
+                             "pd_l1_h_score",
+                             "b7_h3_h_score")))+
+  ylab("% (subtype markers) or\nextent of infiltration (CD3)")+ #facet_manual(vars(tumor_id), design = design, scales = "free_x")
+  facet_grid2(vars(sample_group), vars(patient), render_empty = FALSE)+
+    theme(legend.position="top")+ 
+  guides(colour = guide_legend(override.aes = list(size=5)),
+                                         
+         shape = guide_legend(override.aes = list(size=5)))+
+  labs(colour="marker_name")+ guides(size = "none")
+```
+
+
+# Subtyping
+
+
+```{r following algorithm in Park2024}
+
+h_scores_categorized <- na.omit(h_scores[,grep("ascl1|neurod1|yap1|pou2f|cd3",colnames(h_scores))]) # 146 samples out of 204 (new nr: 171 out of 204)
+
+subtype_classifier <- function(df, 
+                               A,
+                               N,
+                               P,
+                               Y) {
+  
+  # Create a new column 'subtype' and initialize as NA
+  df$ihc_subtype <- NA
+  
+  # Define marker names corresponding to the H-scores
+  marker_names <- c("A", "Y", "N", "P")
+  
+  i=1
+  # Iterate through each row of the dataframe
+  for (i in 1:nrow(df)) {
+    
+    # Extract the H-scores for the row
+    h_scores <- c(df[i,A], df[i,Y], df[i,N], df[i,P])
+    
+    if (is.list(h_scores)){
+      
+      h_scores <- unlist(h_scores)
+    }
+    
+    # If any H-score is missing, assign NA
+    if (any(is.na(h_scores))) {
+      df$ihc_subtype[i] <- NA
+    
+    # If all H-scores are less than 50, assign "QN"
+    } else if (all(h_scores < 50)) {
+      df$ihc_subtype[i] <- "QN"
+    
+    # If one marker has H-score >= 50
+    } else if (sum(h_scores >= 50) == 1) {
+      # Assign subtype based on the single marker with H-score >= 50
+      marker_index <- which(h_scores >= 50)
+      df$ihc_subtype[i] <- marker_names[marker_index]
+    
+    # If two or more markers have H-score >= 50
+    } else if (sum(h_scores >= 50) >= 2) {
+      high_score_indices <- which(h_scores >= 50)
+      high_scores <- h_scores[high_score_indices]
+      
+      # Check if one H-score is at least 2x higher than the others
+      max_score <- max(high_scores)
+      if (any(max_score >= 2 * high_scores[high_scores != max_score])) {
+        # Assign subtype based on the marker with the highest H-score
+        marker_index <- which(h_scores == max_score)
+        df$ihc_subtype[i] <- marker_names[marker_index]
+      
+      # If no marker is 2x higher, assign a concatenated subtype
+      } else {
+        # Concatenate all marker names where H-score >= 50
+        df$ihc_subtype[i] <- paste(marker_names[high_score_indices], collapse = "")
+      }
+    }
+  }
+  
+  # Return the modified dataframe
+  return(df)
+}
+
+# Example usage
+# Assume 'df' is your existing dataframe
+h_scores_categorized <- subtype_classifier(df = h_scores_categorized,
+                                           A = "ascl1_h_score",
+                                           N = "neurod1_h_score",
+                                           P = "pou2f3_h_score",
+                                           Y = "yap1_h_score")
+
+h_scores_categorized$ihc_sample_id <- row.names(h_scores_categorized)
+
+ihc_h_score_vs_cd3 <- merge(h_scores_categorized[,c("ihc_sample_id", "ihc_subtype")], 
+                            ihc[,c(grep("ihc_sample_id|cd3|consensus|b7_h3|pd_l1|dll3", colnames(ihc)))], 
+                            by="ihc_sample_id")
+row.names(ihc_h_score_vs_cd3) <- ihc_h_score_vs_cd3$ihc_sample_id
+
+ihc_h_score_vs_cd3$patient <- ""
+
+
+unique(paste(ihc_h_score_vs_cd3$ihc_subtype, ihc_h_score_vs_cd3$cd3_intra))
+summary(factor(ihc_h_score_vs_cd3$ihc_subtype))
+
+
+
+```
+
+# sfig frequency tab per sample
+
+```{r , fig.width=2.75, fig.height=3}
+
+ihc_subtype_vs_cd3_intra <- as.data.frame(table(ihc_h_score_vs_cd3[!is.na(ihc_h_score_vs_cd3$cd3_intra),
+                                                                   "ihc_subtype"], 
+                                            ihc_h_score_vs_cd3[!is.na(ihc_h_score_vs_cd3$cd3_intra),
+                                                                     "cd3_intra"]))
+colnames(ihc_subtype_vs_cd3_intra) <- c("TF","CD3_intra", "Freq")
+
+ihc_subtype_vs_cd3_intra <- ihc_subtype_vs_cd3_intra[order(ihc_subtype_vs_cd3_intra$Freq, decreasing = TRUE),]
+ihc_subtype_vs_cd3_intra$TF <- factor(ihc_subtype_vs_cd3_intra$TF, levels = rev(unique(ihc_subtype_vs_cd3_intra$TF)))
+
+#ihc_subtype_vs_cd3_intra$Freq <- ifelse(ihc_subtype_vs_cd3_intra$Freq ==0,NA,ihc_subtype_vs_cd3_intra$Freq)
+
+
+ggplot(ihc_subtype_vs_cd3_intra, aes(x = TF, y = CD3_intra, fill = Freq)) +
+  geom_tile(color = "white") +  # Create the heatmap cells
+  geom_text(aes(label = Freq)) +  # Add the frequency values inside the cells
+  scale_fill_gradient(low = colorlist$frequency_cat["low"], 
+                       high = colorlist$frequency_cat["high"], na.value = "grey50")+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+  coord_flip() +
+  theme(legend.position = "none")+
+  ylab("CD3 intratumoral")+xlab("TF-based subtype")+ggtitle("Frequency table")
+
+
+#ggsave("figs/dominating_TF_vs_CD3_intra.png")
+#ggsave("figs/dominating_TF_vs_CD3_intra.svg")
+#ggsave("figs/dominating_TF_vs_CD3_intra.pdf")
+
+```
+
+
+
+
+```{r , fig.width=10, fig.height=5}
+
+ihc_h_score_vs_cd3_full <- ihc_h_score_vs_cd3[!is.na(ihc_h_score_vs_cd3$cd3_intra),]
+
+#ihc_h_score_vs_cd3_full$group <- paste(ihc_h_score_vs_cd3_full$ihc_subtype,
+#                                  ifelse(ihc_h_score_vs_cd3_full$cd3_intra >= 2, "\n-Infl.", ""),sep="")
+ihc_h_score_vs_cd3_full$group <- ihc_h_score_vs_cd3_full$ihc_subtype
+
+summary(factor(ihc_h_score_vs_cd3_full$group))
+
+
+ihc_h_score_vs_cd3_full <- ihc_h_score_vs_cd3_full[order(h_scores_filt["ascl1_h_score",ihc_h_score_vs_cd3_full$ihc_sample_id]),]
+
+
+ihc_h_score_vs_cd3_full <- ihc_h_score_vs_cd3_full[order(ihc_h_score_vs_cd3_full$cd3_intra),]
+
+
+ht = draw(Heatmap(h_scores_filt[,ihc_h_score_vs_cd3_full$ihc_sample_id], 
+        name="H-score",
+        cluster_columns = FALSE,
+        
+        top_annotation = HeatmapAnnotation(df=ihc_h_score_vs_cd3_full[,c("cd3_intra", 
+                                                                         "cd3_peri",
+                                                                         "dll3_h_score",
+                                                                         "pd_l1_h_score",
+                                                                         "b7_h3_h_score")],
+                                           border = FALSE,
+                                           gp = gpar(col = "gray"),
+                                           col = colorlist),
+        column_split = ihc_h_score_vs_cd3_full$group,
+        column_names_gp = gpar(fontsize = 9),
+        column_gap = unit(0.5,"cm"),
+        cluster_column_slices = FALSE,
+        border=TRUE,
+        height = unit(2,"cm"),
+        show_column_names = FALSE,
+        col = colorlist$h_score),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom",
+     column_title="Dominating transcription factor")
+
+
+export_heatmap_png(filename = "figs/h_score_overview", 
+                   width = 10, height=5,
+                   ht_object=ht, 
+                   not_heatmap = FALSE)
+
+```
+
+
+```{r }
+summary(factor(ihc_h_score_vs_cd3$ihc_subtype))
+
+
+```
+
+
+# subtype vs cd3,dll3,b7-h3,pd-l1
+
+```{r , fig.width=15, fig.height=20}
+
+subtype_vs_other_marker <- melt(ihc_h_score_vs_cd3_full)
+levels(subtype_vs_other_marker$variable)
+
+subtype_vs_other_marker <- subtype_vs_other_marker[grepl("h_score|cd3",
+                                                         subtype_vs_other_marker$variable),]
+
+ggplot(subtype_vs_other_marker, aes(x=ihc_subtype,
+                                    y=value))+
+  geom_boxplot(outliers = FALSE)+geom_quasirandom()+
+  stat_compare_means()+stat_pwc(p.adjust.method = "none")+
+  facet_wrap(~variable, ncol=3, scales="free")+ylab("H-score")+theme_classic()
+
+#ggsave("figs/dominating_tf_vs_other_ihc_scores.png")
+#ggsave("figs/dominating_tf_vs_other_ihc_scores.pdf")
+#ggsave("figs/dominating_tf_vs_other_ihc_scores.svg")
+
+
+```
+
+
+
+
+# sfig subtypes per ihc sample
+
+```{r , fig.width=7, fig.height=4}
+
+ihc_h_score_vs_cd3_full$group2 <- ifelse(ihc_h_score_vs_cd3_full$group =="QN", "QN-Immune-desert",
+                                         ihc_h_score_vs_cd3_full$group)
+ihc_h_score_vs_cd3_full$group2 <- ifelse(ihc_h_score_vs_cd3_full$group2 =="A" &
+                                           ihc_h_score_vs_cd3_full$cd3_intra >=2, "A-Infl.",
+                                         ihc_h_score_vs_cd3_full$group2)
+ihc_h_score_vs_cd3_full$group2 <- ifelse(ihc_h_score_vs_cd3_full$group2 =="AP" &
+                                           ihc_h_score_vs_cd3_full$cd3_intra >=2, "AP-Infl.",
+                                         ihc_h_score_vs_cd3_full$group2)
+ihc_h_score_vs_cd3_full$group2 <- ifelse(ihc_h_score_vs_cd3_full$group2 =="P" &
+                                           ihc_h_score_vs_cd3_full$cd3_intra >=2, "P-Infl.",
+                                         ihc_h_score_vs_cd3_full$group2)
+ihc_h_score_vs_cd3_full$group2 <- ifelse(ihc_h_score_vs_cd3_full$group2 =="QN-Immune-desert" &
+                                           ihc_h_score_vs_cd3_full$cd3_intra >=2, "QN-Infl.",
+                                         ihc_h_score_vs_cd3_full$group2)
+
+
+ihc_h_score_vs_cd3_full$group_value <- varhandle::unfactor(factor(ihc_h_score_vs_cd3_full$group2, labels=seq(1,length(unique(ihc_h_score_vs_cd3_full$group2)))))
+
+subtype_per_sample <- merge(ihc_melted, 
+                            ihc_h_score_vs_cd3_full[,c("ihc_sample_id", "group2","group_value")], 
+                            by="ihc_sample_id")
+
+
+# Calculate mean expression for each gene and sample
+#subtype_per_sample <- subtype_per_sample[,c("ihc_id","group_value","tumor_id")] %>%
+#  group_by(tumor_id, ihc_id) %>%
+#  pivot_wider(names_from = ihc_id, values_from = group_value)
+
+#prot_expr_tumors_batchcorr_avrtumor <- as.data.frame(prot_expr_tumors_batchcorr_avrtumor)
+#rownames(prot_expr_tumors_batchcorr_avrtumor) <- prot_expr_tumors_batchcorr_avrtumor$protein
+#prot_expr_tumors_batchcorr_avrtumor$protein <- NULL
+
+
+subtype_per_sample$group_value2 <- 1
+
+
+
+ggplot(subtype_per_sample, 
+       aes(x= ihc_id, y=group_value2, fill=group2))+
+  geom_bar(stat="identity")+
+  theme_bw()+
+  facet_grid2(vars(sample_group), vars(patient), render_empty = FALSE)+
+    theme(legend.position="bottom")+ guides(colour = guide_legend(override.aes = list(size=2)),
+                                         shape = guide_legend(override.aes = list(size=2)))+
+  labs(fill="IHC\nsubtype", size="marker_INT")+ylab("")+
+  scale_fill_manual(values = colorlist$ihc_subtype)+
+  xlab("IHC samples, grouped by patient ID (columns) and by tumor ID (rows)")+
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.text.y = element_text(angle = 0),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+
+strip <- strip_themed(background_x = elem_list_rect(fill = alpha(colorlist$patient, 0.5)),
+                      background_y = elem_list_rect(fill = "snow1"))
+
+
+
+ggplot(subtype_per_sample, 
+       aes(x= ihc_id, y=group_value2, fill=group2))+
+  geom_bar(stat="identity")+
+  theme_bw()+
+  facet_grid2(vars(sample_group), vars(patient), render_empty = FALSE, strip = strip)+
+    theme(legend.position="bottom")+ guides(colour = guide_legend(override.aes = list(size=2)),
+                                         shape = guide_legend(override.aes = list(size=2)))+
+  labs(fill="IHC\nsubtype", size="marker_INT")+ylab("")+
+  scale_fill_manual(values = colorlist$ihc_subtype)+
+  xlab("IHC samples, grouped by patient ID (columns) and by tumor type (rows)")+
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.text.y = element_text(angle = 0),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.switch.pad.grid = unit(0.05, "in"),
+        strip.placement = "outside")
+
+#ggsave("figs/suppl_vOct03/FigureS7_IHC_subtype_summary_per_tumor_vs2.png")
+
+
+
+ggplot(subtype_per_sample, 
+       aes(x= ihc_id, y=group_value2, fill=group2))+
+  geom_bar(stat="identity")+
+  theme_bw()+
+  facet_grid2(vars(sample_group), vars(patient), render_empty = TRUE, strip = strip)+
+    theme(legend.position="bottom")+ guides(colour = guide_legend(override.aes = list(size=2)),
+                                         shape = guide_legend(override.aes = list(size=2)))+
+  labs(fill="IHC\nsubtype", size="marker_INT")+ylab("")+
+  scale_fill_manual(values = colorlist$ihc_subtype)+
+  xlab("IHC samples, grouped by patient ID (columns) and by tumor type (rows)")+
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.text.y = element_text(angle = 0),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.switch.pad.grid = unit(0.05, "in"),
+        strip.placement = "outside")
+
+ggsave("figs/ihc_subtype_summary_per_tumor.png")
+ggsave("figs/ihc_subtype_summary_per_tumor.svg")
+ggsave("figs/ihc_subtype_summary_per_tumor.pdf")
+
+
+```
+
+
+
+```{r , fig.width=10, fig.height=6}
+
+subtype_per_sample_withothermarkers = subtype_per_sample
+
+ihc_sample_ids_unique = unique(subtype_per_sample_withothermarkers$ihc_sample_id)
+
+
+subtype_per_sample_withothermarkers$group_color = ifelse(is.na(subtype_per_sample_withothermarkers$variable),
+                                                         "NA",
+                                                         "")
+
+subtype_per_sample_withothermarkers$group_color = ifelse(as.numeric(subtype_per_sample_withothermarkers$value)>50 &
+                                                           subtype_per_sample_withothermarkers$group_color=="",
+                                                         paste(subtype_per_sample_withothermarkers$variable,"≥50",sep="_"),
+                                                         paste(subtype_per_sample_withothermarkers$variable,"<50",sep="_"))
+
+
+
+
+
+unique(subtype_per_sample_withothermarkers$group_color)
+
+
+
+ggplot(subtype_per_sample_withothermarkers, 
+       aes(x= ihc_id, y=group_value2, fill=group_color))+
+  geom_bar(stat="identity",color="lightgray",size=0.2)+
+  theme_bw()+
+  facet_grid2(vars(sample_group), vars(patient), render_empty = FALSE, strip = strip)+
+    theme(legend.position="left")+ guides(colour = guide_legend(override.aes = list(size=2)),
+                                         shape = guide_legend(override.aes = list(size=2)))+
+  labs(fill="IHC\nsubtype", size="marker_INT")+ylab("")+
+  scale_fill_manual(values = c("neurod1_h_score_<50" = "white", 
+                               "yap1_h_score_<50"= "white",    
+                               "b7_h3_h_score_<50"= "white",   
+                               "ascl1_h_score_<50"= "white" , 
+                               "cd3_peri_<50"= "white" ,       
+                               "pou2f3_h_score_<50" = "white",
+                               "pd_l1_h_score_<50" = "white",  
+                               "dll3_h_score_<50"= "white" ,
+                               "cd3_intra_<50"= "white" ,
+                               "b7_h3_h_score_NA"= "gray" ,
+                               "pd_l1_h_score_NA"= "gray" ,
+                               "dll3_h_score_NA"= "gray" ,
+                               "NA"= "lightgray" ,
+                               "ascl1_h_score_≥50"= "cyan3", #as.character(colorlist$ihc_subtype["A"] ),
+                               "dll3_h_score_≥50"= "firebrick3", #as.character(attr(colorlist$dll3_h_score,"colors")[3]) ,
+                               "pou2f3_h_score_≥50"= "violet",#as.character(colorlist$ihc_subtype["P"]) ,
+                               "neurod1_h_score_≥50"= "forestgreen",#as.character(colorlist$ihc_subtype["N"]) ,
+                               "b7_h3_h_score_≥50"= "black",#attr(colorlist$b7_h3_h_score,"colors")[3],
+                               "yap1_h_score_≥50"="gold" ))+#as.character(colorlist$ihc_subtype["QN"] )))+
+                      #xlab("IHC samples, grouped by patient ID (columns) and by tumor type (rows)")+
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.text.y = element_text(angle = 0),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.switch.pad.grid = unit(0.05, "in"),
+        strip.placement = "outside")
+
+#ggsave("figs/v2025May/ihc_subtype_summary_per_tumor_withothermarkers.png")
+#ggsave("figs/v2025May/ihc_subtype_summary_per_tumor_withothermarkers.svg")
+#ggsave("figs/v2025May/ihc_subtype_summary_per_tumor_withothermarkers.pdf")
+
+
+```
+
+
+
+# Descriptive stat
+
+```{r} 
+
+summary_stats <- ihc %>%
+  group_by(tumor_id) %>%
+  summarise(across(grep("ascl|neuro|pou2|yap1|cd3|pd_l1|dll3|b7_h3", colnames(ihc), value = TRUE), 
+                   list(mean = ~ mean(.x, na.rm = TRUE), 
+                        sd = ~ sd(.x, na.rm = TRUE)), 
+                   .names = "{col}_{fn}"))
+
+```
+
+
+
+
+```{r }
+
+# Calculate mean and sd, then combine into one column per feature dynamically
+summary_stats <- ihc %>%
+  group_by(tumor_id) %>%
+  summarise(across(grep("ascl|neuro|pou2|yap1|cd3|pd_l1|dll3|b7_h3", colnames(ihc), value = TRUE), 
+                   list(mean = ~ round(mean(.x, na.rm = TRUE),2), 
+                        sd = ~ round(sd(.x, na.rm = TRUE),2)), 
+                   .names = "{col}_{fn}")) %>%
+  # Combine mean and sd into one column per feature dynamically
+  rowwise() %>%
+  mutate(across(ends_with("_mean"), 
+                ~ paste0(.x, " ± ", get(sub("_mean", "_sd", cur_column()))), 
+                .names = "{sub('_mean', '(m±sd)', col)}"))
+
+
+
+mean_sd <- summary_stats[,grepl("tumor_id|h_score\\(|cd3_intra\\(|cd3_peri\\(", colnames(summary_stats))]
+
+
+hist(summary_stats$ascl1_perc_sd)
+hist(summary_stats$neurod1_perc_sd)
+hist(summary_stats$yap1_perc_sd)
+hist(summary_stats$pou2f3_perc_sd)
+hist(summary_stats$cd3_intra_sd)
+hist(summary_stats$cd3_peri_sd)
+
+
+x=1
+summary_stats$dominating_subtype <- sapply(seq(1,nrow(summary_stats)), function(x){
+  
+  percs <- as.numeric(summary_stats[x,c("ascl1_perc_mean", "neurod1_perc_mean", "pou2f3_perc_mean")])
+  names(percs) <- c("A","N","P")
+  names(percs[order(percs, decreasing = TRUE)])[1]
+  
+})
+
+summary_stats$subtype_order <- sapply(seq(1,nrow(summary_stats)), function(x){
+  
+  percs <- as.numeric(summary_stats[x,c("ascl1_perc_mean", "neurod1_perc_mean", "pou2f3_perc_mean")])
+  names(percs) <- c("A","N","P")
+  paste(names(percs[order(percs, decreasing = TRUE)]), collapse = " / ")
+  
+})
+
+
+
+```
+
+
+```{r }
+
+tumor_ihc_subtypes <- subtype_classifier(df = summary_stats,
+                                           A = "ascl1_h_score_mean",
+                                           N = "neurod1_h_score_mean",
+                                           P = "pou2f3_h_score_mean",
+                                           Y = "yap1_h_score_mean")
+
+tumor_ihc_subtypes <- tumor_ihc_subtypes[,c("tumor_id", "ihc_subtype")]
+
+
+if (!"ihc_subtype" %in% colnames(summary_stats)){
+  summary_stats <- merge(summary_stats, tumor_ihc_subtypes, by="tumor_id")
+}
+
+
+```
+
+# hm for main fig
+
+
+```{r , fig.width=13, fig.height=5}
+
+
+per_tumor_annot <- merge(summary_stats,
+                         sample_annot_for_ihc, by.x="tumor_id",
+                         by.y="sample_id")
+
+per_tumor_hm <- t(per_tumor_annot[,c("ascl1_h_score_mean", "neurod1_h_score_mean",
+                                   "pou2f3_h_score_mean", "yap1_h_score_mean")])
+colnames(per_tumor_hm) <- per_tumor_annot$tumor_id
+
+per_tumor_annot <- per_tumor_annot[order(per_tumor_annot$cd3_intra_mean),]
+
+per_tumor_annot <- per_tumor_annot[order(per_tumor_annot$ihc_subtype),]
+
+#View(per_tumor_annot[per_tumor_annot$cd3_intra_mean >=2,])
+
+per_tumor_annot$ihc_subtype <- ifelse(per_tumor_annot$cd3_intra_mean>=2 & per_tumor_annot$ihc_subtype =="A", "A-Infl.",
+                                  per_tumor_annot$ihc_subtype)
+#per_tumor_annot$ihc_subtype <- ifelse(per_tumor_annot$cd3_intra_mean>=2 & per_tumor_annot$ihc_subtype =="P", #"P-Infl.",
+#                                  per_tumor_annot$ihc_subtype)
+
+per_tumor_annot$ihc_subtype <- ifelse(per_tumor_annot$cd3_intra_mean<2 &
+                                    per_tumor_annot$ihc_subtype =="QN", "QN-immune-desert",
+                                  per_tumor_annot$ihc_subtype)
+
+
+draw(Heatmap(per_tumor_hm[,per_tumor_annot$tumor_id], 
+        name="H-score",
+        cluster_columns = FALSE,
+        
+        top_annotation = HeatmapAnnotation(df=per_tumor_annot[,
+                                                              c("ihc_subtype",
+                                                                "cd3_intra_mean", 
+                                                                "cd3_peri_mean",
+                                                                "dll3_h_score_mean",
+                                                                "pd_l1_h_score_mean",
+                                                                "b7_h3_h_score_mean")],
+                                           border = FALSE,
+                                           gp = gpar(col = "gray"),
+                                           col = colorlist),
+        column_split = per_tumor_annot$patient,
+        column_names_gp = gpar(fontsize = 12),
+        column_gap = unit(0.5,"cm"),
+        cluster_column_slices = TRUE,
+        border=TRUE,
+        height = unit(2,"cm"),
+        show_column_names = TRUE,
+        col = colorlist$h_score),
+     annotation_legend_side="right",
+     heatmap_legend_side="right")
+
+```
+
+# main fig, frequency tab
+
+
+```{r , fig.width=2, fig.height=2}
+
+
+summary_stats$cd3_intra_categorized <- ifelse(summary_stats$cd3_intra_mean >= 2, "high","low")
+
+ihc_subtype_vs_cd3_intra_tumor <- as.data.frame(table(summary_stats[!is.na(summary_stats$ihc_subtype),
+                                                                   "ihc_subtype"], 
+                                            summary_stats[!is.na(summary_stats$ihc_subtype),
+                                                                     "cd3_intra_categorized"]))
+colnames(ihc_subtype_vs_cd3_intra_tumor) <- c("TF","CD3_intra", "Freq")
+
+ihc_subtype_vs_cd3_intra_tumor <- ihc_subtype_vs_cd3_intra_tumor[order(ihc_subtype_vs_cd3_intra_tumor$Freq, decreasing = TRUE),]
+ihc_subtype_vs_cd3_intra_tumor$TF <- factor(ihc_subtype_vs_cd3_intra_tumor$TF, 
+                                            levels = rev(unique(ihc_subtype_vs_cd3_intra_tumor$TF)))
+
+
+ihc_subtype_vs_cd3_intra_tumor$CD3_intra <- factor(ihc_subtype_vs_cd3_intra_tumor$CD3_intra,
+                                                   levels=c("low","high"))
+
+ggplot(ihc_subtype_vs_cd3_intra_tumor, aes(x = TF, y = CD3_intra, fill = Freq)) +
+  geom_tile(color = "white") +  # Create the heatmap cells
+  geom_text(aes(label = Freq)) +  # Add the frequency values inside the cells
+  scale_fill_gradient(low = colorlist$frequency_cat["low"], 
+                       high = colorlist$frequency_cat["high"], na.value = "grey50") +  # Color gradient
+  theme_bw() +
+  #theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+  coord_flip() +
+  theme(legend.position = "none")+
+  ylab("CD3 intratumoral\n<2 or ≥2")+xlab("TF-based subtype")+ggtitle("Frequency table")
+
+ggsave("figs/tf_vs_cd3_per_tumor.png")
+ggsave("figs/tf_vs_cd3_per_tumor.pdf")
+ggsave("figs/tf_vs_cd3_per_tumor.svg")
+
+
+```
+
+
+
+```{r , fig.width=15, fig.height=8}
+
+summary_stats$ihc_subtype_old <- summary_stats$ihc_subtype
+summary_stats$ihc_subtype <- ifelse(summary_stats$cd3_intra_mean>=2 &
+                                             summary_stats$ihc_subtype =="A", "A-Infl.",
+                                  summary_stats$ihc_subtype)
+summary_stats$ihc_subtype <- ifelse(summary_stats$ihc_subtype =="P-Infl.", "P",
+                                  summary_stats$ihc_subtype)
+
+summary_stats$ihc_subtype <- ifelse(summary_stats$cd3_intra_mean<2 &
+                                    summary_stats$ihc_subtype =="QN", "QN-immune-desert",
+                                  summary_stats$ihc_subtype)
+
+#View(summary_stats[,c("ihc_subtype", "ihc_subtype_old", "cd3_intra_categorized")])
+
+summary_stats_melted <- melt(summary_stats[,!grepl("±|_sd", colnames(summary_stats))&
+                                             grepl("tumor_id|_h_score|cd3_|ihc_subtype", colnames(summary_stats))])
+colnames(summary_stats_melted)[colnames(summary_stats_melted)=="value"] <- "mean"
+
+x=1
+summary_stats_melted$sd <- unlist(sapply(seq(1,nrow(summary_stats_melted)), function(x) {
+  
+  summary_stats[summary_stats$tumor_id == summary_stats_melted$tumor_id[x],gsub("_mean","_sd",summary_stats_melted$variable[x])]
+}))
+
+
+summary_stats_melted <- merge(summary_stats_melted, 
+                              unique(ihc[,c("tumor_id","tumor_id", "rnaseq_consensus_subtype")]),
+                              by="tumor_id")
+summary_stats_melted$tumor_id = sapply(strsplit(summary_stats_melted$tumor_id,
+                                                         split="_1|_2|_3|_4|_5|_6"),"[[",1)
+
+
+
+summary_stats_melted$color <- sapply(seq(1,nrow(summary_stats_melted)), function(x) {
+  
+  if (grepl("KSCLC112",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC112"])
+    
+  } else if (grepl("KSCLC155",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC155"])
+    
+  } else if (grepl("KSCLC156",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC156"])
+    
+  } else if (grepl("KSCLC157",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC157"])
+    
+  } else if (grepl("KSCLC158",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC158"])
+    
+  } else if (grepl("KSCLC159",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC159"])
+    
+  } else if (grepl("KSCLC163",summary_stats_melted$tumor_id[x])){
+    
+    as.character(colorlist$patient["KSCLC163"])
+    
+  }
+  
+})
+
+tumor_colors <- unique(summary_stats_melted[,c("tumor_id","color")])
+
+summary_stats_melted$tumor_id <- factor(summary_stats_melted$tumor_id, levels = rev(unique(summary_stats_melted$tumor_id)))
+
+
+#"A"           "A,N"         "equivocal,N" "N"           "equivocal,I" "A,equivocal" "equivocal"
+subtype_colors <- list(A = "darkblue",
+                       `A,N` = "black",
+                       `equivocal,N` = "#96aa9a",
+                       `N` = "darkgreen",
+                       `equivocal,I` = "gold",
+                       `A,equivocal` = "#6699CC",
+                       `equivocal` = "gray")
+
+
+g1 <- ggplot(summary_stats_melted[!grepl("cd3|b7|dll3|pd_l",summary_stats_melted$variable),], aes(x = tumor_id, y = mean, color = ihc_subtype)) +
+  geom_point(aes(size = sd)) +
+  #scale_color_gradient(low = "blue",high = "red") +
+  scale_color_manual(values= colorlist$ihc_subtype) +
+  scale_size_continuous(range = c(1, 7)) +
+  theme_bw() + geom_hline(yintercept = 50, linetype="dashed", color="darkred")+
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        axis.text.y = element_text(colour=rev(tumor_colors$color))) + facet_wrap(~variable, scales="fixed", ncol=4)+coord_flip()
+g2 <- ggplot(summary_stats_melted[grepl("cd3",summary_stats_melted$variable),], aes(x = tumor_id, y = mean, color = ihc_subtype)) +
+  geom_point(aes(size = sd)) +
+  scale_color_manual(values= colorlist$ihc_subtype) +
+  #scale_color_gradient(low = "blue",high = "red") +
+  scale_size_continuous(range = c(1, 7)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1)) + 
+  facet_wrap(~variable, scales="fixed", ncol=5)+coord_flip()
+g3 <- ggplot(summary_stats_melted[grepl("b7|dll3|pd_l",summary_stats_melted$variable),], aes(x = tumor_id, y = mean, color = ihc_subtype)) +
+  geom_point(aes(size = sd)) +
+  scale_color_manual(values= colorlist$ihc_subtype) +
+  #scale_color_gradient(low = "blue",high = "red") +
+  scale_size_continuous(range = c(1, 7)) +
+  theme_bw() + geom_hline(yintercept = 50, linetype="dashed", color="darkred")+
+  theme(axis.text.x = element_text(angle = 0, hjust = 1)) + 
+  facet_wrap(~variable, scales="fixed", ncol=5)+coord_flip()
+
+
+plot_grid(g1+ ylim(c(0,300))+ theme(legend.position="bottom",
+                    legend.justification = "left")+guides(colour = guide_legend(override.aes = list(size=5))), 
+          g2+ theme(legend.position="bottom",
+                    legend.justification = "left")+theme(axis.text.y = element_blank())+xlab("")+ guides(color="none")+
+    theme(plot.title = element_text(size = 10)) + theme(legend.position="bottom",
+                    legend.justification = "left"),
+    g3+ ylim(c(0,300))+ theme(legend.position="bottom",
+                    legend.justification = "left")+theme(axis.text.y = element_blank())+xlab("")+ guides(color="none")+
+    theme(plot.title = element_text(size = 10)) + theme(legend.position="bottom",
+                    legend.justification = "left"),
+          ncol=3, align="h",axis ="tblr",
+          rel_widths = c(1,0.45,0.6),
+  rel_heights = c(1,1,1))
+
+
+
+ggsave("figs/ihc_per_tumor_summary.png")
+ggsave("figs/ihc_per_tumor_summary.svg")
+ggsave("figs/ihc_per_tumor_summary.pdf")
+
+```
+
+
+
+# main fig, alluvial
+
+
+Alluvial diagram:
+
+```{r , fig.width=7, fig.height=3}
+
+summary_stats_melted <- melt(summary_stats[,!grepl("±|_sd", colnames(summary_stats))&
+                                             grepl("tumor_id|_h_score|cd3_|ihc_subtype", colnames(summary_stats))])
+colnames(summary_stats_melted)[colnames(summary_stats_melted)=="value"] <- "mean"
+
+x=1
+summary_stats_melted$sd <- unlist(sapply(seq(1,nrow(summary_stats_melted)), function(x) {
+  
+  summary_stats[summary_stats$tumor_id == summary_stats_melted$tumor_id[x],gsub("_mean","_sd",summary_stats_melted$variable[x])]
+}))
+
+
+#summary_stats_melted <- merge(summary_stats_melted, unique(ihc[,c("tumor_id", "rnaseq_consensus_subtype")]),
+#                              by="tumor_id")
+
+
+summary_stats_melted <- merge(summary_stats_melted, 
+                              sample_annot_for_ihc,
+                              by.x="tumor_id",
+                              by.y="sample_id",all.x=T)
+
+
+
+alluv_input <- na.omit(unique(summary_stats_melted[,c("tumor_id", "rnaseq_consensus_subtype", "ihc_subtype",
+                                                      "cd3_intra_categorized")]))
+alluv_input$rnaseq_consensus_subtype <- ifelse(grepl("equi",alluv_input$rnaseq_consensus_subtype),"equi-\nvocal", 
+                                               alluv_input$rnaseq_consensus_subtype)
+
+
+alluv_input$rnaseq_consensus_subtype <- ifelse(alluv_input$rnaseq_consensus_subtype=="A,N", "AN",
+                                  alluv_input$rnaseq_consensus_subtype)
+
+alluv_input$ihc_subtype <- gsub("QN-immune-desert","QN\nimmune-desert",alluv_input$ihc_subtype)
+
+alluv_input <- alluv_input[order(alluv_input$ihc_subtype),]
+
+alluv_input$n <- 1
+ggplot(alluv_input,
+       aes(axis1 = factor(rnaseq_consensus_subtype, levels = rev(c("A","AN","N","equi-\nvocal"))),
+           axis2 = factor(ihc_subtype, levels = c("A","A-Infl.","AN","N","P","QN\nimmune-desert")),
+           y = n)) +
+  geom_alluvium(aes(fill = ihc_subtype), width=0.2) +
+  geom_stratum(width=0.2) + # you can modify the width of the white boxes here
+  geom_text(stat = "stratum", 
+            aes(label = after_stat(stratum)),
+            angle=c(0))+
+  ylab("")+scale_fill_manual(values = colorlist$ihc_subtype)+
+  theme_void()+ theme(legend.position = "none")+coord_flip()+ scale_x_reverse()+
+  theme(panel.background = element_rect(fill = 'white'))
+
+
+ggsave("figs/ihc_vs_rnaseq_subtype.png")
+ggsave("figs/ihc_vs_rnaseq_subtype.svg")
+ggsave("figs/ihc_vs_rnaseq_subtype.pdf")
+
+```
+
+
+
+
+# subtype vs dll3,b7-h3,pd-l1 per tumor
+
+```{r , fig.width=15, fig.height=10}
+
+subtype_vs_other_marker <- summary_stats_melted[summary_stats_melted$variable %in% c("dll3_h_score_mean", "pd_l1_h_score_mean", "b7_h3_h_score_mean")&
+                                                  !is.na(summary_stats_melted$ihc_subtype),]
+levels(subtype_vs_other_marker$variable)
+
+ggplot(subtype_vs_other_marker, aes(x=ihc_subtype,
+                                    y=mean))+
+  geom_boxplot(outliers = FALSE)+geom_quasirandom()+
+  stat_compare_means()+stat_pwc(p.adjust.method = "none")+
+  facet_wrap(~variable, ncol=3, scales="free")+ylab("H-score")+theme_classic()
+
+ggsave("figs/ihc_subtype_vs_other_marker_ihc.png")
+ggsave("figs/ihc_subtype_vs_other_marker_ihc.svg")
+ggsave("figs/ihc_subtype_vs_other_marker_ihc.pdf")
+
+
+```
+
+
+
+
+# sfig, TFs in proteomics
+
+
+
+```{r , fig.width=15, fig.height=3}
+
+rnaseq_subtypes <- na.omit(unique(summary_stats_melted[,c("tumor_id", "rnaseq_consensus_subtype", "ihc_subtype",
+                                                          "cd3_intra_categorized")]))
+
+rnaseq_subtypes$ihc_subtype <- ifelse(rnaseq_subtypes$cd3_intra_categorized=="QN-immune-desert",
+                                      "QN\nimmune-desert",
+                                  rnaseq_subtypes$ihc_subtype)
+
+
+subtype_markers = merge(sample_annot_prot[,c("tumor_id",
+                                             "ascl1_prot","neurod1_prot",
+                                      "pou2f3_prot","yap1_prot")],rnaseq_subtypes, by="tumor_id")
+
+
+subtype_markers_df <- t(subtype_markers[,c("ascl1_prot","neurod1_prot",
+                                      "pou2f3_prot","yap1_prot")])
+row.names(subtype_markers_df) <- c("ASCL1","NEUROD1","POU2F3","YAP1")
+colnames(subtype_markers_df) <- subtype_markers$tumor_id
+
+
+
+ht = Heatmap(subtype_markers_df,
+        top_annotation = HeatmapAnnotation(df=subtype_markers[,c("ihc_subtype",
+                                                             "rnaseq_consensus_subtype")],
+                                           border = FALSE,
+                                           gp = gpar(col = NA),
+                                           col = colorlist),
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        col = colorlist$log2_lfq,
+        name="Protein\nlog2(LFQ)",
+        height = unit(2,"cm"),
+        na_col = "lightgray",
+        show_column_names = FALSE,
+        column_split = subtype_markers$ihc_subtype)
+ht
+
+export_heatmap_png(filename = "figs/ihc_subtype_vs_protein_expr", 
+                   width = 15, height=3,
+                   ht_object=ht, 
+                   not_heatmap = FALSE)
+
+```
+
+
+
+```{r }
+
+A_vs_ascl1 <- data.frame(subtype = ifelse(startsWith(subtype_markers$ihc_subtype, "A"), "ASCL1-driven", "not ASCL1-driven"),
+                         ascl1_quant = as.character(ifelse(is.na(subtype_markers$ascl1_prot), "no", "yes")),
+                         ihc_subtype = subtype_markers$ihc_subtype)
+
+A_vs_ascl1 <- table(A_vs_ascl1[,c("subtype", "ascl1_quant")])
+A_vs_ascl1
+
+
+fisher.test(A_vs_ascl1)
+
+```
+
+
+```{r }
+
+QN_vs_yap1 <- data.frame(subtype = ifelse(startsWith(subtype_markers$ihc_subtype, "QN"), "QN", "not QN"),
+                         yap1_quant = as.character(ifelse(is.na(subtype_markers$yap1_prot), "no", "yes")),
+                         ihc_subtype = subtype_markers$ihc_subtype)
+
+QN_vs_yap1 <- table(QN_vs_yap1[,c("subtype", "yap1_quant")])
+QN_vs_yap1
+
+
+fisher.test(QN_vs_yap1)
+
+```
+
+
+```{r }
+
+A_vs_ascl1 <- data.frame(subtype = ifelse(startsWith(subtype_markers$rnaseq_consensus_subtype, "A"), "ASCL1-driven", "not ASCL1-driven"),
+                         ascl1_quant = as.character(ifelse(is.na(subtype_markers$ascl1_prot), "no", "yes")),
+                         rnaseq_consensus_subtype = subtype_markers$rnaseq_consensus_subtype)
+
+A_vs_ascl1 <- table(A_vs_ascl1[,c("subtype", "ascl1_quant")])
+A_vs_ascl1
+
+
+fisher.test(A_vs_ascl1)
+
+```
+
+
+
+```{r }
+
+eq_vs_yap1 <- data.frame(subtype = ifelse(grepl("equivocal",subtype_markers$rnaseq_consensus_subtype), "equivocal", "not equivocal"),
+                         yap1_quant = as.character(ifelse(is.na(subtype_markers$yap1_prot), "no", "yes")),
+                         rnaseq_consensus_subtype = subtype_markers$rnaseq_consensus_subtype)
+
+eq_vs_yap1 <- table(eq_vs_yap1[,c("subtype", "yap1_quant")])
+eq_vs_yap1
+
+
+fisher.test(eq_vs_yap1)
+
+```
+
+
+
+
+
+
+```{r }
+
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Summary statistics", gridLines = TRUE)
+writeData(wb, "Summary statistics", summary_stats[,-grepl("ihc_subtype_old",
+                                                          colnames(summary_stats))], rowNames = TRUE)
+saveWorkbook(wb, file = "supplementary_tables/IHC_summary_statistics.xlsx", overwrite = TRUE)
+
+
+```
+
+
+# Correlation with sample origin / histology
+
+
+```{r }
+
+ihc_and_scores <- merge(summary_stats, sample_annot_for_ihc, by.x="tumor_id",by.y="sample_id", all.x=T)
+
+
+```
+
+
+```{r , fig.width=20, fig.height=15}
+
+g_list <- list()
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=ascl1_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=neurod1_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=pou2f3_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=yap1_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=cd3_intra_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=cd3_peri_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=dll3_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=pd_l1_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+g_list <- append(g_list, list(ggplot(ihc_and_scores, aes(x=sample_group, y=b7_h3_h_score_mean))+geom_boxplot()+stat_compare_means()+theme_bw()))
+
+ggarrange(plotlist = g_list, ncol=2, nrow=5)
+
+ihc_and_scores_melted <- melt(ihc_and_scores[,c("tumor_id","sample_group", "ascl1_h_score_mean", 
+                                                "neurod1_h_score_mean", "pou2f3_h_score_mean",
+                                                "yap1_h_score_mean", 
+                                                "dll3_h_score_mean", "pd_l1_h_score_mean",
+                                                "b7_h3_h_score_mean",
+                                                "cd3_intra_mean",
+                                                "cd3_peri_mean")])
+
+ggplot(ihc_and_scores_melted[!grepl("cd3",ihc_and_scores_melted$variable),], 
+       aes(x=sample_group, y=value, color=variable))+geom_boxplot()+theme_bw()
+ggplot(ihc_and_scores_melted[grepl("cd3",ihc_and_scores_melted$variable),], 
+       aes(x=sample_group, y=value, color=variable))+geom_boxplot()+theme_bw()
+
+
+```
+
+
+
+
+
+# Correlation with single-sample scores
+
+
+```{r , fig.width=15, fig.height=7}
+
+per_tumor_annot = ihc_and_scores
+
+per_tumor_hm <- t(ihc_and_scores[,c("ascl1_h_score_mean", "neurod1_h_score_mean",
+                                   "pou2f3_h_score_mean", "yap1_h_score_mean")])
+colnames(per_tumor_hm) <- ihc_and_scores$tumor_id
+
+per_tumor_annot <- per_tumor_annot[order(per_tumor_annot$cd3_intra_mean),]
+
+per_tumor_annot <- per_tumor_annot[order(per_tumor_annot$ihc_subtype),]
+
+per_tumor_annot$ihc_subtype <- ifelse(per_tumor_annot$cd3_intra_mean>=2 & per_tumor_annot$ihc_subtype =="A", "A-Infl.",
+                                  per_tumor_annot$ihc_subtype)
+
+per_tumor_annot$ihc_subtype <- ifelse(per_tumor_annot$cd3_intra_mean<2 &
+                                    per_tumor_annot$ihc_subtype =="QN", "QN-immune-desert",
+                                  per_tumor_annot$ihc_subtype)
+
+per_tumor_annot$label <- per_tumor_annot$tumor_id
+#per_tumor_annot$label <- gsub("prim_lung","primary",per_tumor_annot$label)
+
+
+ht <- Heatmap(per_tumor_hm[,per_tumor_annot$tumor_id], 
+        name="H-score",
+        cluster_columns = FALSE,
+        
+        top_annotation = HeatmapAnnotation(df=per_tumor_annot[,
+                                                              c("ihc_subtype",
+                                                                "cd3_intra_mean", 
+                                                                "cd3_peri_mean",
+                                                                "dll3_h_score_mean",
+                                                                "pd_l1_h_score_mean",
+                                                                "b7_h3_h_score_mean")],
+                                           border = FALSE,
+                                           gp = gpar(col = "gray"),
+                                           col = colorlist),
+        #column_split = ifelse(ihc_h_score_vs_cd3_full[,"cd3_intra"] >=2, "inflamed", "non-inflamed"),
+        column_split = per_tumor_annot$patient,
+        column_names_gp = gpar(fontsize = 12),
+        column_gap = unit(0.5,"cm"),
+        cluster_column_slices = TRUE,
+        border=TRUE,
+        height = unit(2,"cm"),
+        column_labels = per_tumor_annot$label,
+        #rect_gp = gpar(col = "white"),
+        show_column_names = TRUE,
+        col = colorlist$h_score)
+
+ht = draw(ht,
+     annotation_legend_side="right",
+     heatmap_legend_side="right")
+
+
+export_heatmap_png(filename = "figs/ihc_h_scores_per_tumor", 
+                   width = 15, height=7,
+                   ht_object=ht, 
+                   not_heatmap = FALSE)
+
+```
+
+
+```{r , fig.width=15, fig.height=9}
+
+subtype_markers_simplified = subtype_markers %>%
+  dplyr::select(tumor_id, ascl1_prot, neurod1_prot, pou2f3_prot, yap1_prot) %>%
+  group_by(tumor_id) %>%
+  summarise(across(
+    c(ascl1_prot, neurod1_prot, pou2f3_prot, yap1_prot),
+    mean,
+    na.rm = TRUE
+  )) %>% as.data.frame()
+
+row.names(subtype_markers_simplified) = subtype_markers_simplified$tumor_id
+subtype_markers_simplified$tumor_id = NULL
+subtype_markers_simplified = as.data.frame(t(subtype_markers_simplified))
+#subtype_markers_simplified[is.nan(subtype_markers_simplified)] = NA
+#colnames(subtype_markers_simplified)
+
+
+
+# add missing columns with NA
+for (col in setdiff(colnames(per_tumor_hm), colnames(subtype_markers_simplified))) {
+  subtype_markers_simplified[[col]] <- NA
+}
+
+# match column order
+subtype_markers_simplified <- subtype_markers_simplified[, colnames(per_tumor_hm)]
+
+# combine
+h_scores_vs_omics <- as.matrix(rbind(per_tumor_hm, subtype_markers_simplified))
+
+
+h_scores_vs_omics[is.nan(h_scores_vs_omics)] = NA
+h_scores_vs_omics[c(5:8),] = (-1)* h_scores_vs_omics[c(5:8),]
+
+
+row.names(per_tumor_annot) = per_tumor_annot$tumor_id
+
+
+per_tumor_annot = rbind(per_tumor_annot[grepl("primary",per_tumor_annot$tumor_id),],
+                        per_tumor_annot[!grepl("primary",per_tumor_annot$tumor_id),])
+per_tumor_annot = per_tumor_annot[order(per_tumor_annot$patient),]
+
+
+x = per_tumor_annot$tumor_id[1]
+per_tumor_annot$rnaseq_consensus_subtype = unlist(sapply(per_tumor_annot$tumor_id,
+                                                  function(x){
+                                                    
+                                                    if (!x %in% subtype_markers$tumor_id){
+                                                      return(NA)
+                                                    } else {
+                                                      unique(subtype_markers[subtype_markers$tumor_id==x,"rnaseq_consensus_subtype"])
+                                                    }
+                                                  }))
+
+
+ht <- Heatmap(h_scores_vs_omics[,per_tumor_annot$tumor_id], 
+        name="H-score",
+        cluster_columns = FALSE,
+        
+        top_annotation = HeatmapAnnotation(df=per_tumor_annot[,
+                                                              c("ihc_subtype",
+                                                                "rnaseq_consensus_subtype",
+                                                                "cd3_intra_mean", 
+                                                                "cd3_peri_mean")],#,
+                                                                #"dll3_h_score_mean",
+                                                                #"pd_l1_h_score_mean",
+                                                                #"b7_h3_h_score_mean")],
+                                           border = FALSE,
+                                           gp = gpar(col = "gray"),
+                                           col = colorlist),
+        #column_split = ifelse(ihc_h_score_vs_cd3_full[,"cd3_intra"] >=2, "inflamed", "non-inflamed"),
+        column_split = per_tumor_annot$ihc_subtype,
+        column_names_gp = gpar(fontsize = 12),
+        column_gap = unit(0.5,"cm"),
+        cluster_column_slices = FALSE,
+        cluster_rows = FALSE,
+        border=TRUE,
+        row_split = ifelse(grepl("h_score",row.names(h_scores_vs_omics)),
+                           "H-scores","Proteomics-based\nquant"),
+        height = unit(6,"cm"),
+        column_labels = per_tumor_annot$label,
+        #rect_gp = gpar(col = "white"),
+        show_column_names = TRUE,
+        col = colorRamp2(c(-20,-5,0, 50,75, 100,200,300), 
+                         c("green4","green3","black","navyblue","lightblue","white", "orange","red")))
+
+
+ht = draw(ht,
+     annotation_legend_side="right",
+     heatmap_legend_side="right")
+
+
+```
+
+
+
+
+```{r }
+save(per_tumor_annot,
+     file="rdata/IHC_per_tumor.RData")
+```
+
+
+
+
+
+```{r , fig.width=22, fig.height=5}
+
+discrete_heatmap_annot <- merge(unique(ihc_melted[,c("ihc_sample_id",
+                                              "tumor_id",
+                                              "slide",
+                                              "patient",
+                                              "sample_group")]), 
+                            ihc_h_score_vs_cd3_full[,c("ihc_sample_id", "group2","group_value",
+                                                       
+                                                       "b7_h3_h_score",
+                                                       "dll3_h_score",
+                                                       "pd_l1_h_score")], 
+                            by="ihc_sample_id", all=T)
+discrete_heatmap_annot$ihc_id <- 0
+
+for (i in 1:nrow(discrete_heatmap_annot)){
+  
+  discrete_heatmap_annot$ihc_id[i] <- gsub(paste0(discrete_heatmap_annot$tumor_id[i],"_"),
+                                           "", discrete_heatmap_annot$ihc_sample_id[i])
+  
+}
+
+
+
+discrete_heatmap_annot <- rbind(discrete_heatmap_annot,
+                                data.frame(ihc_sample_id = c("KSCLC112_end", "KSCLC155_end", "KSCLC156_end", 
+                                                             "KSCLC157_end", "KSCLC158_end", "KSCLC159_end",
+                                                             "KSCLC163_end",
+                                                        "KSCLC163_end1",
+                                                        "KSCLC163_end2",
+                                                        "KSCLC163_end3"),
+                                           tumor_id = c("KSCLC112_end", "KSCLC155_end", "KSCLC156_end", 
+                                                                 "KSCLC157_end", "KSCLC158_end", "KSCLC159_end",
+                                                                 "KSCLC163_end",
+                                                        "KSCLC163_end1",
+                                                        "KSCLC163_end2",
+                                                        "KSCLC163_end3"),
+                                           slide = c(rep(7,7),8,9,10),
+                                           patient = c("KSCLC112", "KSCLC155", "KSCLC156", 
+                                                       "KSCLC157", "KSCLC158", "KSCLC159",
+                                                       "KSCLC163","KSCLC163","KSCLC163","KSCLC163"),
+                                           sample_group = c(rep("end",7),"end","end","end"),
+                                           group2 = c(rep("end",7),"end","end","end"),
+                                           group_value = c(rep(0,7),0,0,0),
+                                           b7_h3_h_score = c(rep(0,7),0,0,0),
+                                           dll3_h_score = c(rep(0,7),0,0,0),
+                                           pd_l1_h_score = c(rep(0,7),0,0,0),
+                                           ihc_id = c(rep(7,7),8,9,10)))
+
+
+discrete_heatmap_annot$splitter <- varhandle::unfactor(discrete_heatmap_annot$sample_group)
+
+sites <- unique(discrete_heatmap_annot$splitter)
+sites <- sites[order(sites)]
+
+discrete_heatmap_annot <- discrete_heatmap_annot[order(discrete_heatmap_annot$ihc_id),]
+discrete_heatmap_annot <- discrete_heatmap_annot[order(discrete_heatmap_annot$tumor_id),]
+discrete_heatmap_annot <- discrete_heatmap_annot[order(discrete_heatmap_annot$patient),]
+
+
+discrete_heatmap_annot_reordered <- rbind(discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC112" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC112" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC112" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC155" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC155" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC155" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC156" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC156" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC156" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC157" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC157" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC157" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC158" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC158" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC158" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC159" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC159" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC159" &
+                                                                   discrete_heatmap_annot$splitter =="end",],
+                                          
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC163" &
+                                                                   discrete_heatmap_annot$splitter =="primary",],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC163" &
+                                                                   grepl("_met",discrete_heatmap_annot$splitter),],
+                                          discrete_heatmap_annot[discrete_heatmap_annot$patient=="KSCLC163" &
+                                                                   discrete_heatmap_annot$splitter =="end",])
+
+
+discrete_heatmap <- t(discrete_heatmap_annot_reordered$group_value)
+
+Heatmap(discrete_heatmap,
+        column_labels = discrete_heatmap_annot_reordered$ihc_id,
+        column_split = paste(discrete_heatmap_annot_reordered$patient, discrete_heatmap_annot_reordered$splitter, sep="_"),
+        show_column_names = TRUE,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        #row_gap = unit(c(2, 4), "mm"),
+        height = unit(0.2,"cm"))
+
+
+
+```
+
+```{r , fig.width=5.75, fig.height=5}
+
+discrete_heatmap <- t(discrete_heatmap_annot_reordered$group2)
+
+discrete_heatmap_dupl <- rbind(discrete_heatmap,
+                          discrete_heatmap)
+colnames(discrete_heatmap_dupl) <- discrete_heatmap_annot_reordered$ihc_sample_id
+colnames(discrete_heatmap) <- discrete_heatmap_annot_reordered$ihc_sample_id
+
+discrete_heatmap_annot_reordered_noend <- discrete_heatmap_annot_reordered[discrete_heatmap_annot_reordered$splitter !="end",]
+
+discrete_heatmap <- t(discrete_heatmap_annot_reordered_noend$group2)
+colnames(discrete_heatmap) <- discrete_heatmap_annot_reordered_noend$ihc_id
+
+
+b7_h3 <- t(discrete_heatmap_annot_reordered_noend$b7_h3_h_score)
+dll3 <- t(discrete_heatmap_annot_reordered_noend$dll3_h_score)
+pd_l1 <- t(discrete_heatmap_annot_reordered_noend$pd_l1_h_score)
+
+
+
+
+circos.clear()
+
+circos.par(start.degree = 90, gap.degree = c(5,5,5,5,5,5,30))
+
+circos.heatmap(discrete_heatmap_annot_reordered_noend$splitter, 
+               split= discrete_heatmap_annot_reordered_noend$patient,
+               col = colorlist$sample_group, track.height = 0.1,
+               show.sector.labels = TRUE)
+
+circos.heatmap(t(discrete_heatmap), col = colorlist$ihc_subtype,
+               na.col = "snow1",cell.border	= "darkgray",
+               split= discrete_heatmap_annot_reordered_noend$patient,
+               cluster=FALSE, show.sector.labels = FALSE,
+               #rownames.side = "inside", 
+               track.height = 0.1)
+
+
+circos.heatmap(t(b7_h3), col = colorlist$b7_h3_h_score,
+               na.col = "snow1",cell.border	= "darkgray",
+               split= discrete_heatmap_annot_reordered_noend$patient,
+               cluster=FALSE, show.sector.labels = FALSE,
+               #rownames.side = "inside", 
+               track.height = 0.05)
+
+circos.heatmap(t(dll3), col = colorlist$dll3_h_score,
+               na.col = "snow1",cell.border	= "darkgray",
+               split= discrete_heatmap_annot_reordered_noend$patient,
+               cluster=FALSE, show.sector.labels = FALSE,
+               #rownames.side = "inside", 
+               track.height = 0.05)
+
+circos.heatmap(t(pd_l1), col = colorlist$pd_l1_h_score,
+               na.col = "snow1",cell.border	= "darkgray",
+               split= discrete_heatmap_annot_reordered_noend$patient,
+               cluster=FALSE, show.sector.labels = FALSE,
+               #rownames.side = "inside", 
+               track.height = 0.05)
+
+
+
+
+
+
+
+```
+
+```{r , fig.width=12, fig.height=10}
+
+l_ihcsub = Legend(at = names(colorlist$ihc_subtype)[names(colorlist$ihc_subtype) %in% unique(discrete_heatmap[1,])], 
+                  title = " \nIHC\nsubtype", 
+                  legend_gp = gpar(fill = colorlist$ihc_subtype[names(colorlist$ihc_subtype) %in% unique(discrete_heatmap[1,])]),
+                  border = "lightgray")
+l_site = Legend(at = names(colorlist$sample_group)[names(colorlist$sample_group) %in% unique(discrete_heatmap_annot_reordered_noend$splitter)], 
+                  title = " \nSample\ntype", 
+                  legend_gp = gpar(fill = colorlist$sample_group[names(colorlist$sample_group) %in% discrete_heatmap_annot_reordered_noend$splitter]),
+                  border = "lightgray")
+
+l_b7h3 = Legend(at = attr(colorlist$b7_h3_h_score, "breaks"), 
+                  title = " \nB7-H3\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$b7_h3_h_score, "colors")),
+                  border = "lightgray")
+l_pdl1 = Legend(at = attr(colorlist$pd_l1_h_score, "breaks"), 
+                  title = " \nPD-L1\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$pd_l1_h_score, "colors")),
+                  border = "lightgray")
+l_dll3 = Legend(at = attr(colorlist$dll3_h_score, "breaks"), 
+                  title = " \nDLL3\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$dll3_h_score, "colors")),
+                  border = "lightgray")
+
+
+
+discrete_heatmap[is.na(discrete_heatmap)] <- "N/A"
+
+circlize_plot = function() {
+  circos.par(start.degree = 90, gap.degree = c(3,3,3,3,3,3,30))
+  
+  circos.heatmap(discrete_heatmap_annot_reordered_noend$splitter, 
+                 split= discrete_heatmap_annot_reordered_noend$patient,
+                 col = colorlist$sample_group, track.height = 0.1,
+                 show.sector.labels = TRUE)
+  
+  circos.heatmap(t(discrete_heatmap), col = colorlist$ihc_subtype,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$patient,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 rownames.cex = 0.3,
+                 track.height = 0.1)
+  
+  
+  circos.heatmap(t(b7_h3), col = colorlist$b7_h3_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$patient,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  circos.heatmap(t(dll3), col = colorlist$dll3_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$patient,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  circos.heatmap(t(pd_l1), col = colorlist$pd_l1_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$patient,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  
+  circos.clear()
+}
+
+
+
+circos.clear()
+
+
+plot.new()
+circle_size = unit(1, "snpc") # snpc unit gives you a square region
+
+pushViewport(viewport(x = 0, y = 0.5, width = circle_size, height = circle_size,
+                      just = c("left", "center")))
+par(omi = gridOMI(), new = TRUE)
+circlize_plot()
+upViewport()
+
+# Add manual text inside the circular plot region
+grid.text("Sample type", y = unit(0.92, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("IHC subtype", y = unit(0.87, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("B7-H3 H-score", y = unit(0.825, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("DLL3 H-score", y = unit(0.79, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("PD-L1 H-score", y = unit(0.76, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+
+h = dev.size()[2]
+lgd_list = packLegend(l_site, l_ihcsub,max_height = unit(0.2*h, "inch"))
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(15, "cm"))
+lgd_list =packLegend(l_b7h3,l_dll3,l_pdl1, max_height = unit(0.2*h, "inch"),
+                        direction = "horizontal")
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(10, "cm"))
+
+
+
+```
+
+
+```{r }
+
+png(filename = "figs/circular_ihc_subtype_summary_per_tumor.png",
+    width = 12, height = 10, units = "in",res = 600)
+
+circos.clear()
+
+plot.new()
+circle_size = unit(1, "snpc") # snpc unit gives you a square region
+
+pushViewport(viewport(x = 0, y = 0.5, width = circle_size, height = circle_size,
+                      just = c("left", "center")))
+par(omi = gridOMI(), new = TRUE)
+circlize_plot()
+upViewport()
+
+# Add manual text inside the circular plot region
+grid.text("Sample type", y = unit(0.92, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("IHC subtype", y = unit(0.87, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("B7-H3 H-score", y = unit(0.825, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("DLL3 H-score", y = unit(0.79, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("PD-L1 H-score", y = unit(0.76, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+
+h = dev.size()[2]
+lgd_list = packLegend(l_site, l_ihcsub,max_height = unit(0.2*h, "inch"))
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(15, "cm"))
+lgd_list =packLegend(l_b7h3,l_dll3,l_pdl1, max_height = unit(0.2*h, "inch"),
+                        direction = "horizontal")
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(10, "cm"))
+
+dev.off()
+
+
+```
+
+
+```{r }
+
+pdf(file = "figs/circular_ihc_subtype_summary_per_tumor.pdf",
+    width = 12, height = 10)
+
+circos.clear()
+
+plot.new()
+circle_size = unit(1, "snpc") # snpc unit gives you a square region
+
+pushViewport(viewport(x = 0, y = 0.5, width = circle_size, height = circle_size,
+                      just = c("left", "center")))
+par(omi = gridOMI(), new = TRUE)
+circlize_plot()
+upViewport()
+
+grid.text("Sample type", y = unit(0.92, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("IHC subtype", y = unit(0.87, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("B7-H3 H-score", y = unit(0.825, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("DLL3 H-score", y = unit(0.79, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("PD-L1 H-score", y = unit(0.76, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+
+h = dev.size()[2]
+lgd_list = packLegend(l_site, l_ihcsub,max_height = unit(0.2*h, "inch"))
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(15, "cm"))
+lgd_list =packLegend(l_b7h3,l_dll3,l_pdl1, max_height = unit(0.2*h, "inch"),
+                        direction = "horizontal")
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(10, "cm"))
+
+dev.off()
+
+
+
+
+svg(filename = "figs/circular_ihc_subtype_summary_per_tumor.svg",
+    width = 12, height = 10)
+
+circos.clear()
+
+plot.new()
+circle_size = unit(1, "snpc") # snpc unit gives you a square region
+
+pushViewport(viewport(x = 0, y = 0.5, width = circle_size, height = circle_size,
+                      just = c("left", "center")))
+par(omi = gridOMI(), new = TRUE)
+circlize_plot()
+upViewport()
+
+grid.text("Sample type", y = unit(0.92, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("IHC subtype", y = unit(0.87, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("B7-H3 H-score", y = unit(0.825, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("DLL3 H-score", y = unit(0.79, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("PD-L1 H-score", y = unit(0.76, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+
+h = dev.size()[2]
+lgd_list = packLegend(l_site, l_ihcsub,max_height = unit(0.2*h, "inch"))
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(15, "cm"))
+lgd_list =packLegend(l_b7h3,l_dll3,l_pdl1, max_height = unit(0.2*h, "inch"),
+                        direction = "horizontal")
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(10, "cm"))
+
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r , fig.width=12, fig.height=10}
+
+l_ihcsub = Legend(at = names(colorlist$ihc_subtype)[names(colorlist$ihc_subtype) %in% unique(discrete_heatmap[1,])], 
+                  title = " \nIHC\nsubtype", 
+                  legend_gp = gpar(fill = colorlist$ihc_subtype[names(colorlist$ihc_subtype) %in% unique(discrete_heatmap[1,])]),
+                  border = "lightgray")
+
+l_b7h3 = Legend(at = attr(colorlist$b7_h3_h_score, "breaks"), 
+                  title = " \nB7-H3\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$b7_h3_h_score, "colors")),
+                  border = "lightgray")
+l_pdl1 = Legend(at = attr(colorlist$pd_l1_h_score, "breaks"), 
+                  title = " \nPD-L1\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$pd_l1_h_score, "colors")),
+                  border = "lightgray")
+l_dll3 = Legend(at = attr(colorlist$dll3_h_score, "breaks"), 
+                  title = " \nDLL3\nH-score", 
+                  legend_gp = gpar(fill = attr(colorlist$dll3_h_score, "colors")),
+                  border = "lightgray")
+
+
+
+discrete_heatmap[is.na(discrete_heatmap)] <- "N/A"
+
+discrete_heatmap_annot_reordered_noend$tumor_id2 = paste(discrete_heatmap_annot_reordered_noend$patient,
+                                                         discrete_heatmap_annot_reordered_noend$sample_group,
+                                                         sep="_")
+
+
+circlize_plot = function() {
+  circos.par(start.degree = 90, gap.degree = c(rep(0.8,4),3, #112
+                                               rep(0.8,2),3, #155
+                                               rep(0.8,5),3, #156
+                                               rep(0.8,2),3, #157
+                                               rep(0.8,6),3, #158
+                                               rep(0.8,4),3, #159
+                                               rep(0.8,3),3, #163
+                                               30))
+  
+  circos.heatmap(discrete_heatmap_annot_reordered_noend$group2, 
+                 split= discrete_heatmap_annot_reordered_noend$tumor_id2,
+                 col = colorlist$ihc_subtype, track.height = 0.10,
+                 show.sector.labels = TRUE)
+ # circos.text(discrete_heatmap_annot_reordered_noend$tumor_id2, 1, nm, facing = "clockwise", adj = c(0, 0.5))
+  #https://github.com/jokergoo/circlize/issues/304
+  
+  circos.heatmap(t(discrete_heatmap), col = colorlist$ihc_subtype,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$tumor_id2,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 rownames.cex = 0.3,
+                 track.height = 0.1)
+  
+  
+  circos.heatmap(t(b7_h3), col = colorlist$b7_h3_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$tumor_id2,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  circos.heatmap(t(dll3), col = colorlist$dll3_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$tumor_id2,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 #rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  circos.heatmap(t(pd_l1), col = colorlist$pd_l1_h_score,
+                 na.col = "snow1",cell.border	= "darkgray",
+                 split= discrete_heatmap_annot_reordered_noend$tumor_id2,
+                 cluster=FALSE, show.sector.labels = FALSE,
+                 rownames.side = "inside", 
+                 track.height = 0.05)
+  
+  
+  circos.clear()
+}
+
+
+
+circos.clear()
+
+plot.new()
+circle_size = unit(1, "snpc") # snpc unit gives you a square region
+
+pushViewport(viewport(x = 0, y = 0.5, width = circle_size, height = circle_size,
+                      just = c("left", "center")))
+par(omi = gridOMI(), new = TRUE)
+circlize_plot()
+upViewport()
+
+# Add manual text inside the circular plot region
+grid.text("Sample type", y = unit(0.92, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("IHC subtype", y = unit(0.87, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("B7-H3 H-score", y = unit(0.825, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("DLL3 H-score", y = unit(0.79, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+grid.text("PD-L1 H-score", y = unit(0.76, "npc"), x = unit(0.41, "npc"),
+          gp = gpar(col = "black", fontsize = 10, fontface = "bold"),
+          just = "right")
+
+h = dev.size()[2]
+lgd_list = packLegend(l_site, l_ihcsub,max_height = unit(0.2*h, "inch"))
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(15, "cm"))
+lgd_list =packLegend(l_b7h3,l_dll3,l_pdl1, max_height = unit(0.2*h, "inch"),
+                        direction = "horizontal")
+draw(lgd_list,# x = circle_size, 
+     just = "left",
+     x = unit(9, "cm"), y = unit(10, "cm"))
+
+
+
+```
+
+
+
+```{r }
+
+
+
+```
+
+
+
+
+
+```{r }
+
+```
+
+
+
+
+```{r }
+
+```
+
+
+
+
+```{r }
+
+```
+
+

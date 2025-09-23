@@ -1,0 +1,500 @@
+---
+title: "Calculating single-sample scores"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+```{r }
+load("rdata/rna_seq.RData")
+load("rdata/ihc.RData")
+load("rdata/proteomics.RData")
+load("rdata/gene_protein_annotations.RData")
+load("rdata/sample_annotations.RData")
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl"),]
+
+```
+
+
+
+```{r }
+rna_expr <- rnaseq$filt_log2
+gene_annot <- gene_annotation[row.names(rnaseq$filt_log2),]
+rna_expr_notlog <- rnaseq$filt
+
+prot_expr <- prot_expr_1_cleaned_nooutliers
+prot_annot <- protein_annotation
+
+
+rna_expr_unfilt <- rnaseq$full_log2
+
+```
+
+
+
+```{r}
+
+rna_expr_gene <- select_gene_with_highest_expr(expr_mat = rna_expr,
+                                               rowannot = gene_annot[,c("ensembl_gene_id", "selected_entrez")])
+#row.names(rna_expr_gene$newtab) = gsub("X","",row.names(rna_expr_gene$newtab))
+
+
+rna_expr_notlog_gene <- select_gene_with_highest_expr(expr_mat = rna_expr_notlog,
+                                               rowannot = gene_annot[,c("ensembl_gene_id", "selected_entrez")])
+#row.names(rna_expr_notlog_gene$newtab) = gsub("X","",row.names(rna_expr_notlog_gene$newtab))
+
+
+
+rna_expr_ESTIMATEfiltered <- filter_common_genes(rna_expr_gene$newtab, 
+                                                 id = "entrezgene_id", 
+                                                 tidy = FALSE, 
+                                                 tell_missing = TRUE, 
+                                                 find_alias = TRUE)
+#Found 9482 of 10391 genes (91.252%) in your dataset.
+#Number of stromal_signature genes in data: 132 (out of 141)
+#Number of immune_signature genes in data: 131 (out of 141)
+
+estimate_scores <- estimate_score(rna_expr_ESTIMATEfiltered,is_affymetrix = TRUE)
+row.names(estimate_scores) <- estimate_scores$sample
+
+colnames(estimate_scores)[2:ncol(estimate_scores)] <- paste("ESTIMATE",colnames(estimate_scores)[2:ncol(estimate_scores)],sep="_")
+
+```
+
+```{r }
+#gsc <- getBroadSets("files/msigdb_v7.5.1.xml")
+#save(gsc, file="rdata/msigdb_v7.5.1.RData")
+load("rdata/msigdb_v7.5.1.RData")
+
+geneset_example <- gsc
+
+```
+
+
+```{r }
+NE_raw <- as.data.frame(readxl::read_xlsx("files/NE_and_non-NE_genes_Zhang2018.xlsx"))
+
+NE_markers <- unique(NE_raw[NE_raw$Type=="NE","Gene"])
+NE_markers <- na.omit(bitr(NE_markers, 
+                   fromType="SYMBOL", 
+                   toType = "ENTREZID", 
+                   OrgDb=org.Hs.eg.db,
+                   drop = FALSE)[,2])
+
+nonNE_markers <- unique(NE_raw[NE_raw$Type=="NON-NE","Gene"])
+nonNE_markers <- na.omit(bitr(nonNE_markers, 
+                   fromType="SYMBOL", 
+                   toType = "ENTREZID", 
+                   OrgDb=org.Hs.eg.db,
+                   drop = FALSE)[,2])
+
+EMT_raw <- as.data.frame(readxl::read_xlsx("files/EMT_genes_Kohn2014.xlsx"))
+EPITH_markers <- unique(EMT_raw[EMT_raw$Type=="EPITH","Gene"])
+EPITH_markers <- na.omit(bitr(EPITH_markers, 
+                   fromType="SYMBOL", 
+                   toType = "ENTREZID", 
+                   OrgDb=org.Hs.eg.db,
+                   drop = FALSE)[,2])
+MES_markers <- unique(EMT_raw[EMT_raw$Type=="MES","Gene"])
+MES_markers <- na.omit(bitr(MES_markers, 
+                   fromType="SYMBOL", 
+                   toType = "ENTREZID", 
+                   OrgDb=org.Hs.eg.db,
+                   drop = FALSE)[,2])
+
+NE_geneset <- geneset_example[[1]]
+NE_geneset@geneIds <- NE_markers
+NE_geneset@setName <- "NE_geneset"
+
+nonNE_geneset <- geneset_example[[1]]
+nonNE_geneset@geneIds <- nonNE_markers
+nonNE_geneset@setName <- "nonNE_geneset"
+
+
+EPITH_geneset <- geneset_example[[1]]
+EPITH_geneset@geneIds <- EPITH_markers
+EPITH_geneset@setName <- "EPITH_geneset"
+
+
+MES_geneset <- geneset_example[[1]]
+MES_geneset@geneIds <- MES_markers
+MES_geneset@setName <- "MES_geneset"
+
+
+```
+
+
+Park et al., inflamed signature
+
+```{r }
+
+park_genenames <- unique(c("CD160", "CD244", "CTSW", "FASLG", "GZMA", "GZMB", "GZMH", "IL18RAP", "IL2RB", "KIR2DL4", 
+                                           "KLRB1", "KLRC3", "KLRD1", "KLRF1", "KLRK1", "NCR1", "NKG7", "PRF1", "XCL1", "XCL2", # NK cell
+                                           "GZMA", "PRF1", # cytolytic T cell
+                                           "PSMB10", "HLA-DQA1", "HLA-DRB1", "CMKLR1", "HLA-E", "NKG7", "CD8A", "CCL5", 
+                                           "CXCL9", "CD27", "CXCR6", "IDO1", "STAT1", "TIGIT", "LAG3", "CD274", "PDCD1LG2", "CD276")) # T cell inflamed
+park_markers <- na.omit(bitr(park_genenames, 
+                             fromType="SYMBOL", 
+                             toType = "ENTREZID", 
+                             OrgDb=org.Hs.eg.db,
+                             drop = FALSE)[,2])
+
+
+Park_inflamed_signature <- geneset_example[[1]]
+Park_inflamed_signature@geneIds <-park_markers
+Park_inflamed_signature@setName <- "Park_inflamed_signature"
+
+```
+
+
+
+# Singscore calculation
+
+
+
+```{r }
+custom_genesets <- c(NE_geneset, nonNE_geneset, 
+                         Park_inflamed_signature)
+names(custom_genesets) <- c("NE_geneset", "nonNE_geneset", 
+                                "Park_inflamed_signature")
+```
+
+
+
+```{r }
+singScore.input <- DGEList(counts = rna_expr_gene$newtab, genes = row.names(rna_expr_gene$newtab)) 
+singScore.input <- rankGenes(singScore.input) # the genes are ranked in each sample based on their expression value
+```
+
+
+```{r }
+
+#ranked.df <- singScore.input
+#geneset.list <- genesets.to.be.used
+#min.overlap <- 50
+#overlap.in.percentage <- T
+calculate_singScores <- function(ranked.df, geneset.list, overlap.in.percentage, min.overlap){
+  sample.order <- colnames(ranked.df)
+  
+  GS <- 1
+  scoredfs <- lapply(seq(1, length(geneset.list)), function(GS){
+    overlapping.genes <- geneset.list[[GS]]@geneIds
+    nr.genes <- length(overlapping.genes)
+    
+    overlapping.genes <- overlapping.genes[overlapping.genes %in% row.names(ranked.df)]
+    # only keep genes that are present in our data -> this removes the unnecessary warning message that slows down the script + has no effect on the results
+    
+    if (overlap.in.percentage){
+      min.overlap <- nr.genes * (min.overlap/100)
+    }
+    
+    
+    if (length(overlapping.genes) < min.overlap){
+      ss <- data.frame(Col1 = rep(NA, length(sample.order)), Col2 = rep(NA, length(sample.order)), row.names = sample.order)
+    } else {
+      ss <- simpleScore(ranked.df, upSet = overlapping.genes, knownDirection = TRUE, centerScore =TRUE)
+      ss <- ss[sample.order,]
+    }
+    colnames(ss) <- c(names(geneset.list)[GS], paste(names(geneset.list)[GS],"TotalDisp", sep="_"))
+    return(ss)
+  })
+  
+  scoredfs.merged <- do.call(cbind,scoredfs)
+  
+  Disp.tab <- scoredfs.merged[,grepl("_TotalDisp", colnames(scoredfs.merged))]
+  Scores <- scoredfs.merged[,!grepl("_TotalDisp", colnames(scoredfs.merged))]
+  return(list(Scores = Scores,
+              Dispersions = Disp.tab))
+}
+```
+
+
+
+```{r }
+Sys.time()
+singScore.res <- calculate_singScores(ranked.df = singScore.input, 
+                                      geneset.list = custom_genesets, 
+                                      overlap.in.percentage = T, 
+                                      # if TRUE, then 50% of the genes in the geneset need to be present in our samples for the calculation; 
+                                      # if FALSE, then regardless of gene set size, 50 genes in the geneset need to be present in our samples for the
+                                      # calculation (but 50 is too much for a hard cutoff)
+                                      min.overlap=50) 
+Sys.time()
+# runs for only a couple of seconds
+```
+
+
+```{r }
+single_sample_scores <- as.data.frame(na.omit(t(singScore.res$Scores)))
+dispersions <- as.data.frame(na.omit(t(singScore.res$Dispersions)))
+
+```
+
+
+```{r }
+
+single_sample_scores_rnaseq <- rbind(single_sample_scores, 
+                    t(estimate_scores[colnames(single_sample_scores),c(grep("ESTIMATE",colnames(estimate_scores)))]))
+
+single_sample_scores_rnaseq <- apply(single_sample_scores_rnaseq, c(1,2),as.numeric)
+
+```
+
+
+
+```{r }
+
+save(single_sample_scores_rnaseq,
+     custom_genesets,
+     file="rdata/single_sample_scores_rnaseq.RData")
+
+```
+
+
+
+# Compare to proteomics
+
+
+```{r }
+
+proteomics_sample_avr <- average_expr_data(prot_expr_1_cleaned_nooutliers,
+                                           unique(sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(prot_expr_1_cleaned_nooutliers) & sample_annot_withrepl$type !="ctrl",c("replicate_id", "sample_id")]))
+
+
+single_sample_scores_rnaseq_sample_avr <- average_expr_data(single_sample_scores_rnaseq,
+                                                            unique(sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(single_sample_scores_rnaseq),c("replicate_id", "sample_id")]))
+single_sample_scores_rnaseq_sample_avr <- as.data.frame(t(single_sample_scores_rnaseq_sample_avr[,colnames(proteomics_sample_avr)]))
+
+colnames(single_sample_scores_rnaseq_sample_avr) <- gsub("NE_geneset","NE_score", colnames(single_sample_scores_rnaseq_sample_avr))
+
+
+```
+
+
+```{r , fig.width=15, fig.height=10}
+
+ne_nonne_prot_annots <- data.frame(protein_groups = c(protein_annotation[protein_annotation$selected_entrez_first %in% c(NE_markers),"protein_group"],
+                                                      protein_annotation[protein_annotation$selected_entrez_first %in% c(nonNE_markers),"protein_group"]),
+                                   gene_names = NA,
+                                   type = NA,
+                                   cor_value = NA,
+                                   corr = NA)
+row.names(ne_nonne_prot_annots) <- ne_nonne_prot_annots$protein_groups
+ne_nonne_prot_annots <- ne_nonne_prot_annots[row.names(ne_nonne_prot_annots) %in% row.names(proteomics_sample_avr),]
+ne_nonne_prot_annots$type <- ifelse(ne_nonne_prot_annots$protein_groups %in% protein_annotation[protein_annotation$selected_entrez_first %in% c(NE_markers),"protein_group"],"NE marker","non-NE marker")
+
+ne_nonne_prot_annots$gene_names <- protein_annotation[ne_nonne_prot_annots$protein_groups,"gene_names"]
+x = "Q53EL9-3"
+ne_nonne_prot_annots$corr <- sapply(ne_nonne_prot_annots$protein_groups,function(x){
+  #print(x)
+  if (ne_nonne_prot_annots[x,"type"]=="NE marker"){
+    prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"NE_score"]))
+  } else {
+    prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"nonNE_score"]))
+  }
+  
+  if (nrow(prot_vs_score)>10){
+    test_res = cor.test(prot_vs_score$expr,prot_vs_score$score, method = "spearman")
+    
+    if (ne_nonne_prot_annots[x,"type"]=="NE marker"){
+      return(paste0("corr with NE score=",round(test_res$estimate,3),", p=",round(test_res$p.value,3)))
+    } else {
+      return(paste0("corr with non-NE score=",round(test_res$estimate,3),", p=",round(test_res$p.value,3)))
+    }
+    
+    
+  } else {
+    return("corr not calculated")
+  }
+  
+  
+})
+corrs <- setNames(sapply(ne_nonne_prot_annots$protein_groups,function(x){
+  #print(x)
+  if (ne_nonne_prot_annots[x,"type"]=="NE marker"){
+    prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"NE_score"]))
+  } else {
+    prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"nonNE_score"]))
+  }
+  
+  if (nrow(prot_vs_score)>9){
+    test_res = cor.test(prot_vs_score$expr,prot_vs_score$score, method = "spearman")
+    
+    return(test_res$estimate)
+    
+    
+  } else {
+    return(NA)
+  }
+  
+  
+}),ne_nonne_prot_annots$protein_groups)
+
+mean(corrs[ne_nonne_prot_annots[ne_nonne_prot_annots$type=="NE marker","protein_groups"]],na.rm=T)
+mean(corrs[ne_nonne_prot_annots[ne_nonne_prot_annots$type=="non-NE marker","protein_groups"]],na.rm=T)
+
+
+ne_nonne_prot_annots$label = paste(ne_nonne_prot_annots$protein_groups,
+                                   ne_nonne_prot_annots$gene_names, sep=" - ")
+ne_nonne_prot_annots$label = paste(ne_nonne_prot_annots$label,
+                                   ne_nonne_prot_annots$corr, sep=" - ")
+
+
+cor.test(single_sample_scores_rnaseq_sample_avr$NE_score,
+         single_sample_scores_rnaseq_sample_avr$nonNE_score)
+
+single_sample_scores_rnaseq_sample_avr$combine_NE <- single_sample_scores_rnaseq_sample_avr$NE_score - single_sample_scores_rnaseq_sample_avr$nonNE_score
+sample_order <- row.names(single_sample_scores_rnaseq_sample_avr[order(single_sample_scores_rnaseq_sample_avr$combine_NE),])
+
+ht <- draw(Heatmap(t(scale(t(proteomics_sample_avr[ne_nonne_prot_annots$protein_groups,sample_order]))),
+             col = colorlist$`z-score`,
+        top_annotation = HeatmapAnnotation(df = single_sample_scores_rnaseq_sample_avr[sample_order,c("NE_score","nonNE_score")],
+                                           col = colorlist),
+        row_labels = ne_nonne_prot_annots$label,
+        row_split = ne_nonne_prot_annots$type,
+        cluster_columns = FALSE,
+        name="Z-scored\nprot. abundance",
+        width = unit(5,"cm"),
+        height = unit(nrow(ne_nonne_prot_annots)*0.4,"cm"),
+        show_column_names = FALSE
+        ),
+     heatmap_legend_side = "bottom",
+     annotation_legend_side = "bottom")
+
+
+export_heatmap_png(filename = "figs/NE_nonNE_scores_prot_correlation", width = 15, height=10, ht_object=ht)
+
+
+
+
+
+inflamed_prot_annots <- data.frame(protein_groups = c(protein_annotation[protein_annotation$selected_entrez_first %in% c(park_markers),"protein_group"]),
+                                   gene_names = NA,
+                                   type = "Inflamed markers (Park)",
+                                   cor_value = NA,
+                                   corr = NA)
+row.names(inflamed_prot_annots) <- inflamed_prot_annots$protein_groups
+inflamed_prot_annots <- inflamed_prot_annots[row.names(inflamed_prot_annots) %in% row.names(proteomics_sample_avr),]
+
+inflamed_prot_annots$gene_names <- protein_annotation[inflamed_prot_annots$protein_groups,"gene_names"]
+
+inflamed_prot_annots$corr <- sapply(inflamed_prot_annots$protein_groups,function(x){
+  #print(x)
+   prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"Park_inflamed_signature"]))
+  
+  if (nrow(prot_vs_score)>10){
+    test_res = cor.test(prot_vs_score$expr,prot_vs_score$score, method = "spearman")
+    return(paste0("corr with Inflamed score=",round(test_res$estimate,3),", p=",round(test_res$p.value,3)))
+    
+  } else {
+    return("corr not calculated")
+  }
+  
+  
+})
+corrs <- setNames(sapply(inflamed_prot_annots$protein_groups,function(x){
+  #print(x)
+  prot_vs_score <- na.omit(data.frame(expr = scale(as.numeric(proteomics_sample_avr[x,])),
+                              score = single_sample_scores_rnaseq_sample_avr[colnames(proteomics_sample_avr),"Park_inflamed_signature"]))
+  
+  if (nrow(prot_vs_score)>10){
+    test_res = cor.test(prot_vs_score$expr,prot_vs_score$score, method = "spearman")
+    return(test_res$estimate)
+    
+  } else {
+    return(NA)
+  }
+  
+  
+}),inflamed_prot_annots$protein_groups)
+
+mean(corrs,na.rm=T)
+
+
+inflamed_prot_annots$label = paste(inflamed_prot_annots$protein_groups,
+                                   inflamed_prot_annots$gene_names, sep=" - ")
+inflamed_prot_annots$label = paste(inflamed_prot_annots$label,
+                                   inflamed_prot_annots$corr, sep=" - ")
+
+sample_order <- row.names(single_sample_scores_rnaseq_sample_avr[order(single_sample_scores_rnaseq_sample_avr$Park_inflamed_signature),])
+
+ht = draw(Heatmap(t(scale(t(proteomics_sample_avr[inflamed_prot_annots$protein_groups,sample_order]))),
+             col = colorlist$`z-score`,
+        top_annotation = HeatmapAnnotation(Park_inflamed_signature = single_sample_scores_rnaseq_sample_avr[sample_order,c("Park_inflamed_signature")],
+                                           col = colorlist),
+        row_labels = inflamed_prot_annots$label,
+        row_split = inflamed_prot_annots$type,
+        cluster_columns = FALSE,
+        name="Z-scored\nprot. abundance",
+        width = unit(5,"cm"),
+        height = unit(nrow(inflamed_prot_annots)*0.4,"cm"),
+        show_column_names = FALSE
+        ),
+     heatmap_legend_side = "bottom",
+     annotation_legend_side = "bottom")
+
+export_heatmap_png(filename = "figs/Inflamed_scores_prot_correlation", width = 15, height=5, ht_object=ht)
+
+
+```
+
+
+
+```{r }
+
+
+geneset_summary <- data.frame(geneset_name = c("NE_geneset", "non_NE_geneset", "Park_inflamed_signature", "ESTIMATE"),
+                              genes = c(paste(custom_genesets$NE_geneset@geneIds,collapse=","),
+                                        paste(custom_genesets$nonNE_geneset@geneIds,collapse=","),
+                                        paste(custom_genesets$Park_inflamed_signature@geneIds,collapse=","),
+                                        "See in R package tidyestimate https://github.com/KaiAragaki/tidyestimate"))
+
+
+single_sample_scores_rnaseq_export = as.data.frame(single_sample_scores_rnaseq[c(
+                                                                 "ESTIMATE_stromal", 
+                                                                 "ESTIMATE_immune", 
+                                                                 "NE_geneset", 
+                                                                 "nonNE_geneset", 
+                                                                 "Park_inflamed_signature"),])
+row.names(single_sample_scores_rnaseq_export) = c("ESTIMATE stromal score",
+                                                  "ESTIMATE immune score",
+                                                  "Neuroendocrine score",
+                                                  "Non-neuroendocrine score",
+                                                  "Inflamed score (Park et al., 2024)")
+
+prot_corr_res = rbind(ne_nonne_prot_annots,inflamed_prot_annots)[,c("type", "label")]
+colnames(prot_corr_res) = c("Marker type","Correlation between protein intensity and single-sample score")
+
+
+wb <- createWorkbook()
+#addWorksheet(wb, sheet = "Gene sets for singscore", gridLines = TRUE)
+#writeData(wb, "Gene sets for singscore", geneset_summary)
+addWorksheet(wb, sheet = "Single-sample scores", gridLines = TRUE)
+writeData(wb, "Single-sample scores", single_sample_scores_rnaseq_export, rowNames = TRUE)
+addWorksheet(wb, sheet = "Correlation with protein int.", gridLines = TRUE)
+writeData(wb, "Correlation with protein int.", prot_corr_res, rowNames = FALSE)
+saveWorkbook(wb, file = "supplementary_tables/Table S3 - Single-sample scores.xlsx", overwrite = TRUE)
+
+```
+
+
+
+```{r }
+
+```
+
+
+```{r }
+
+```
+

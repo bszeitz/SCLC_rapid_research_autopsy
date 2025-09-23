@@ -1,0 +1,360 @@
+---
+title: "Tumor-site specific proteins"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+source("helpers/load_packages.R")
+```
+
+```{r}
+
+load("rdata/histology_linregr.RData")
+load("rdata/tumor_vs_ctrl_results.RData")
+
+```
+
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+load("rdata/gene_protein_annotations.RData")
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+
+
+proteomic_samples <- unique(sample_annot_withrepl[!is.na(sample_annot_withrepl$proteomics),c("tumor_id","patient","origin","type")])
+row.names(proteomic_samples) <- proteomic_samples$tumor_id
+
+
+proteomic_samples$organ_type = paste(proteomic_samples$origin,
+                                         proteomic_samples$type,sep="_")
+
+
+expr_tab_full <- average_expr_data(both_batchcorr,
+                                   sample_annot_withrepl[!is.na(sample_annot_withrepl$proteomics),
+                                                         c("replicate_id", "tumor_id")])
+
+```
+
+
+
+```{r }
+summary(factor(proteomic_samples$organ_type))
+
+
+expr_tab = filter_missingvalues(expr_tab_full,90)
+
+organ_types_to_compare = unique(proteomic_samples$organ_type)
+organ_types_to_compare = organ_types_to_compare[!grepl("brain_stem|cerebellum|spleen|subcutan|ctrl|peritoneum",organ_types_to_compare)]
+
+sites = unique(proteomic_samples$origin)
+sites = sites[!sites %in% c("brain_stem","cerebellum","spleen","subcutan",
+                            "peritoneum")] #peritoneum is removed because there's no ctrl tissue available
+
+results_list = list()
+protein_order = row.names(expr_tab)
+
+log2FC_cutoff = log2(2)
+log2FC_cutoff_othertumor = log2(2)
+
+p_cutoff = 0.05
+
+i =9
+for (i in 1:length(organ_types_to_compare)){
+  
+  print(organ_types_to_compare[i])
+  
+  relevant_grouping = proteomic_samples$organ_type
+  names(relevant_grouping) = proteomic_samples$tumor_id
+  relevant_grouping = ifelse(relevant_grouping == organ_types_to_compare[i],
+                             "selected_tumor",relevant_grouping)
+  relevant_grouping = ifelse(relevant_grouping == gsub("met|prim","ctrl",organ_types_to_compare[i]),
+                             "selected_ctrl",relevant_grouping)
+  relevant_grouping = ifelse(!grepl("selected",relevant_grouping) & grepl("ctrl",relevant_grouping),
+                             "other_ctrl",relevant_grouping)
+  relevant_grouping = ifelse(!grepl("selected",relevant_grouping) & !grepl("ctrl",relevant_grouping),
+                             "other_tumor",relevant_grouping)
+  names(relevant_grouping) = proteomic_samples$tumor_id
+  
+  group <- factor(relevant_grouping)
+  names(group) <- names(relevant_grouping)
+  design <- model.matrix(~0 + group)
+  colnames(design) <- levels(group)
+  
+  if (!any(colnames(design) %in% "selected_ctrl")){
+    contrast_matrix <- makeContrasts(
+      selected_vs_other_tumors = selected_tumor - other_tumor,
+      selected_vs_other_ctrl = selected_tumor - other_ctrl,
+      levels = design
+    )
+  } else {
+    # Define contrasts
+    contrast_matrix <- makeContrasts(
+      selected_vs_ctrl = selected_tumor - selected_ctrl,
+      selected_vs_other_tumors = selected_tumor - other_tumor,
+      selected_vs_other_ctrl = selected_tumor - other_ctrl,
+      levels = design
+    )
+  }
+  
+  
+  
+  fit <- lmFit(expr_tab[,names(group)], design)
+  fit2 <- contrasts.fit(fit, contrast_matrix)
+  fit2 <- eBayes(fit2, trend = TRUE, robust = TRUE)
+  # Extract results for each comparison
+  
+  results_de2 <- topTable(fit2, coef = "selected_vs_other_tumors", number = Inf)
+  colnames(results_de2) = paste(organ_types_to_compare[i],
+                                paste("selected_vs_other_tumors",colnames(results_de2),sep="_"),sep="_")
+  
+  results_de3 <- topTable(fit2, coef = "selected_vs_other_ctrl", number = Inf)
+  colnames(results_de3) = paste(organ_types_to_compare[i],
+                                paste("selected_vs_other_ctrl",colnames(results_de3),sep="_"),sep="_")
+  
+  
+  if (!any(colnames(design) %in% "selected_ctrl")){
+    
+    results_all = cbind(results_de2[protein_order,],
+                      results_de3[protein_order,])
+    
+    
+    sel_vs_other_tum = grep("selected_vs_other_tumors_logFC",colnames(results_all),value = TRUE)
+    sel_vs_other_ctrl = grep("selected_vs_other_ctrl_logFC",colnames(results_all),value = TRUE)
+    sel_vs_other_tum_p = grep("selected_vs_other_tumors_P.Value",colnames(results_all),value = TRUE)
+    sel_vs_other_ctrl_p = grep("selected_vs_other_ctrl_P.Value",colnames(results_all),value = TRUE)
+    
+    results_all[,sel_vs_other_tum] = ifelse(is.na(results_all[,sel_vs_other_tum]),0,
+                                            results_all[,sel_vs_other_tum])
+    results_all[,sel_vs_other_ctrl] = ifelse(is.na(results_all[,sel_vs_other_ctrl]),0,
+                                            results_all[,sel_vs_other_ctrl])
+    results_all[,sel_vs_other_tum_p] = ifelse(is.na(results_all[,sel_vs_other_tum_p]),1,
+                                            results_all[,sel_vs_other_tum_p])
+    results_all[,sel_vs_other_ctrl_p] = ifelse(is.na(results_all[,sel_vs_other_ctrl_p]),1,
+                                            results_all[,sel_vs_other_ctrl_p])
+    
+    
+    results_all[,paste0(organ_types_to_compare[i],"signif")] = ifelse(results_all[,sel_vs_other_tum]>log2FC_cutoff_othertumor &
+                                                                        results_all[,sel_vs_other_ctrl]>log2FC_cutoff&
+                                                                        results_all[,sel_vs_other_tum_p]<p_cutoff&
+                                                                        results_all[,sel_vs_other_ctrl_p]<p_cutoff, "*","")
+    
+    
+  } else {
+    results_de1 <- topTable(fit2, coef = "selected_vs_ctrl", number = Inf)
+    colnames(results_de1) = paste(organ_types_to_compare[i],
+                                  paste("selected_vs_ctrl",colnames(results_de1),sep="_"),sep="_")
+
+    results_all = cbind(results_de1[protein_order,],
+                      results_de2[protein_order,],
+                      results_de3[protein_order,])
+    
+    
+    sel_vs_other_tum = grep("selected_vs_other_tumors_logFC",colnames(results_all),value = TRUE)
+    sel_vs_other_ctrl = grep("selected_vs_other_ctrl_logFC",colnames(results_all),value = TRUE)
+    sel_vs_other_tum_p = grep("selected_vs_other_tumors_P.Value",colnames(results_all),value = TRUE)
+    sel_vs_other_ctrl_p = grep("selected_vs_other_ctrl_P.Value",colnames(results_all),value = TRUE)
+    
+    sel_vs_selected_ctrl = grep("selected_vs_ctrl_logFC",colnames(results_all),value = TRUE)
+    sel_vs_selected_ctrl_p = grep("selected_vs_ctrl_P.Value",colnames(results_all),value = TRUE)
+    
+    
+    results_all[,sel_vs_other_tum] = ifelse(is.na(results_all[,sel_vs_other_tum]),0,
+                                            results_all[,sel_vs_other_tum])
+    results_all[,sel_vs_other_ctrl] = ifelse(is.na(results_all[,sel_vs_other_ctrl]),0,
+                                            results_all[,sel_vs_other_ctrl])
+    results_all[,sel_vs_other_tum_p] = ifelse(is.na(results_all[,sel_vs_other_tum_p]),1,
+                                            results_all[,sel_vs_other_tum_p])
+    results_all[,sel_vs_other_ctrl_p] = ifelse(is.na(results_all[,sel_vs_other_ctrl_p]),1,
+                                            results_all[,sel_vs_other_ctrl_p])
+    results_all[,sel_vs_selected_ctrl] = ifelse(is.na(results_all[,sel_vs_selected_ctrl]),0,
+                                            results_all[,sel_vs_selected_ctrl])
+    results_all[,sel_vs_selected_ctrl_p] = ifelse(is.na(results_all[,sel_vs_selected_ctrl_p]),1,
+                                            results_all[,sel_vs_selected_ctrl_p])
+    
+    
+    results_all[,paste0(organ_types_to_compare[i],"signif")] = ifelse(results_all[,sel_vs_other_tum]>log2FC_cutoff_othertumor &
+                                                                        results_all[,sel_vs_other_ctrl]>log2FC_cutoff&
+                                                                        results_all[,sel_vs_selected_ctrl]>log2FC_cutoff&
+                                                                        results_all[,sel_vs_other_tum_p]<p_cutoff&
+                                                                        results_all[,sel_vs_selected_ctrl_p]<p_cutoff&
+                                                                        results_all[,sel_vs_other_ctrl_p]<p_cutoff, "*","")
+    
+    
+    
+  }
+  
+  
+  
+  results_list[[i]] = results_all
+  
+}
+
+
+
+```
+
+
+```{r }
+
+results_df = do.call(cbind,results_list)
+
+grep("signif",colnames(results_df),value = TRUE)
+
+results_df_signif <- results_df[apply(results_df[, 
+                                                 grep("signif", colnames(results_df))], 
+                                      1, function(x) any(x == "*")), grep("signif",colnames(results_df),value = TRUE)]
+
+results_df_signif$gene_names = protein_annotation[row.names(results_df_signif),"gene_names"]
+
+results_df_signif$gene_names = ifelse(row.names(results_df_signif) == "A0A0C4DH38","IGHV5-51",
+                                      results_df_signif$gene_names)
+
+
+
+```
+
+
+
+
+```{r }
+
+results_df_signif$protein_group = row.names(results_df_signif)
+
+df_long <- results_df_signif %>%
+  pivot_longer(
+    cols = ends_with("signif"), # select all metastasis significance columns
+    names_to = "site",
+    values_to = "significant"
+  ) %>%
+  filter(significant == "*")
+
+df_long$site = gsub("signif","",df_long$site)
+
+```
+
+
+```{r , fig.width=10, fig.height=8}
+
+glist = list()
+
+df_long = df_long[order(df_long$site),]
+
+i=41
+for (i in 1:nrow(df_long)){
+  
+  gg_df = proteomic_samples
+  gg_df$prot = as.numeric(expr_tab[df_long$protein_group[i],proteomic_samples$tumor_id])
+  
+  if (grepl("prim",df_long$site[i])){
+    ctrl_site = "lung_ctrl"
+  } else {
+    ctrl_site = gsub("met","ctrl",df_long$site[i])
+  }
+  
+  gg_df$site = "control\ntissue\n(other)"
+  gg_df$site = ifelse(gg_df$organ_type == df_long$site[i],
+                      "tumor\ntissue\n(selected)", gg_df$site)
+  gg_df$site = ifelse(gg_df$organ_type == ctrl_site,
+                      paste0("control\ntissue\n(selected)"), gg_df$site)
+  gg_df$site = ifelse(gg_df$site == "control\ntissue\n(other)" & grepl("met|prim",gg_df$type),
+                      "tumor\ntissue\n(other)", gg_df$site)
+  
+  gg_df$site = factor(gg_df$site, levels = c("tumor\ntissue\n(selected)",
+                                             "tumor\ntissue\n(other)",
+                                             "control\ntissue\n(selected)",
+                                             "control\ntissue\n(other)"))
+  
+  g = ggplot(gg_df[!is.na(gg_df$prot),],aes(x=site,y=prot, fill=site))+geom_boxplot(outliers = FALSE,alpha=0.8)+#stat_compare_means()+
+          ggtitle(paste0(df_long$gene_names[i]," (",
+                        df_long$protein_group[i], ")\nUP in ",gsub("lung_prim","primary tumors",
+                                                                            gsub("_met"," metastases",df_long$site[i]))))+theme_classic()+
+    geom_beeswarm(alpha=0.2)+scale_fill_manual(values=c("black","lightgray","#86c5da","lightblue"))+
+    xlab("")+ylab("Protein log2(LFQ)")+ theme(plot.title = element_text(size=12))
+  
+  glist[i] = list(g)
+  
+
+}
+
+ggarrange(plotlist=glist, ncol=4,nrow=3,common.legend = TRUE)
+
+
+ggsave("figs/site_specific_boxplot.png")
+ggsave("figs/site_specific_boxplot.pdf")
+ggsave("figs/site_specific_boxplot.svg")
+
+```
+
+
+```{r , fig.width=8, fig.height=25}
+
+df_long = as.data.frame(df_long)
+row.names(df_long) = df_long$protein_group
+
+ht = Heatmap(scale(t(expr_tab[row.names(results_df_signif),proteomic_samples$tumor_id])),
+        row_split = proteomic_samples$organ_type,
+        cluster_rows = T,
+        column_split = paste("signif. in",df_long[row.names(results_df_signif),"site"],sep=" "),
+        col = colorlist$`z-score`,
+        cluster_columns = T,
+        name="Z-scored\nprotein LFQ",
+        row_title_rot = 0,
+        width = unit(4,"cm"),
+        column_title_rot = 45,
+        column_labels = results_df_signif$gene_names)
+
+
+draw(ht)
+
+export_heatmap_png(filename = "figs/site_specific_heatmap", 
+                   width = 8, height=25, ht_object=ht)
+```
+
+
+```{r }
+
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Site-specific proteins", gridLines = TRUE)
+writeData(wb, "Site-specific proteins", results_df_signif)
+addWorksheet(wb, sheet = "All DEA results", gridLines = TRUE)
+writeData(wb, "All DEA results", merge(protein_annotation[,c("protein_group",
+                                                                        "gene_names")],
+                                       results_df,
+                                                  
+                                                  by.y="row.names",by.x="protein_group"))
+saveWorkbook(wb, file = "supplementary_tables/site_specific_proteins.xlsx", overwrite = TRUE)
+
+```
+
+
+
+
+```{r }
+
+```
+

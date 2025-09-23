@@ -1,0 +1,954 @@
+---
+title: "Exploratory analyses on proteomics and RNA-Seq"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+```{r}
+load("rdata/gene_protein_annotations.RData")
+load("rdata/sample_annotations.RData")
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl"),]
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+
+colnames(both_batchcorr)[!colnames(both_batchcorr) %in% sample_annot_withrepl$replicate_id]
+
+```
+
+# Sample overview
+
+
+```{r , fig.width=4.5, fig.height=4.5}
+
+#Note: this table is not provided with the publication, should be skipped
+load("rdata/sample_overview_table.RData")
+
+# Add row annotations with a bar plot
+tumor_counts <- rowSums(sample_overview_table > 0)
+tumor_counts = tumor_counts[order(tumor_counts,decreasing = TRUE)]
+
+
+ht <- Heatmap(sample_overview_table[names(tumor_counts),],
+              name = "Tumors",
+              border = TRUE,
+              col = colorRamp2(breaks = c(0,1),
+                               colors = c("white","firebrick")),
+              cluster_rows = FALSE,
+              border_gp = gpar(col = "black"),
+              rect_gp = gpar(col = "white"),
+              cluster_columns = FALSE,
+              #column_split = sample_types,
+              #row_split = gsub("_prot|_rna","",row.names(nr_tumors_matrix)),
+              cluster_column_slices = FALSE,
+              row_names_side = "right",
+              column_names_side = "top",
+              #row_labels = ifelse(grepl("_prot",row.names(nr_tumors_matrix)),"proteomics", "RNA-Seq"),
+              show_row_names = TRUE,
+              show_heatmap_legend = FALSE,
+              show_column_names = TRUE,
+              #row_title_rot = 90,
+              row_names_gp = gpar(fontsize = 10),
+              heatmap_legend_param = list(title = "Tumor Count"),
+              column_names_rot = 45)
+
+ht
+
+
+bar_plot <- rowAnnotation(`Nr of unique\nmetastasis\nsites` = anno_barplot(-tumor_counts, gp = gpar(fill = "darkgray",
+                                                                                     col="darkgray"),
+                                                             bar_width = 1,border =FALSE,
+                                                             attach=TRUE,
+                                                             axis_param = list(
+                                                               at = c(0, -2, -4, -6, -8),  # Reverse axis labels
+                                                               labels = c(0, 2, 4, 6, 8)
+                                                             ),
+                                                             width = unit(2,"cm")))
+
+ht_with_annotations <- bar_plot + ht
+
+# Draw the heatmap with annotations
+draw(ht_with_annotations)
+
+
+export_heatmap_png(filename = "figs/sample_overview", 
+                   width = 4.5, height=4.5,
+                   ht_object=ht_with_annotations, 
+                   not_heatmap = FALSE)
+
+```
+
+
+
+
+
+# Nr of quantified transcripts and proteins
+
+
+```{r }
+
+sample_annot_withrepl$nr_quant_proteins <- NA
+
+for (i in 1:ncol(prot_expr_1_cleaned_nooutliers)){
+  sample_annot_withrepl[colnames(prot_expr_1_cleaned_nooutliers)[i],"nr_quant_proteins"] <- length(na.omit(as.vector(prot_expr_1_cleaned_nooutliers[,i])))
+}
+for (i in 1:ncol(prot_expr_2_cleaned_nooutliers)){
+  sample_annot_withrepl[colnames(prot_expr_2_cleaned_nooutliers)[i],"nr_quant_proteins"] <- length(na.omit(as.vector(prot_expr_2_cleaned_nooutliers[,i])))
+}
+
+sample_annot_withrepl$nr_transcripts <- NA
+for (i in 1:ncol(rnaseq$full)){
+  tpms <- as.vector(rnaseq$full[,i])
+  sample_annot_withrepl[colnames(rnaseq$full)[i],"nr_transcripts"] <- length(tpms[tpms>0])
+}
+
+mean(sample_annot_withrepl$nr_transcripts, na.rm=T)
+mean(sample_annot_withrepl[sample_annot_withrepl$cohort=="cohort1","nr_quant_proteins"], na.rm=T)
+mean(sample_annot_withrepl[sample_annot_withrepl$cohort=="cohort2","nr_quant_proteins"], na.rm=T)
+
+
+
+```
+
+
+
+```{r , fig.width=8, fig.height=3}
+quant_per_tumor <- sample_annot_withrepl[,c("replicate_id", "patient",
+                                            "nr_quant_proteins", "nr_transcripts", "type", "cohort")]
+
+quant_per_tumor_melt <- reshape2::melt(quant_per_tumor)
+
+quant_per_tumor_melt$type <- ifelse(quant_per_tumor_melt$type =="ctrl", "ctrl tissue", quant_per_tumor_melt$type)
+quant_per_tumor_melt$type <- ifelse(quant_per_tumor_melt$type =="prim", "primary", quant_per_tumor_melt$type)
+quant_per_tumor_melt$type <- ifelse(quant_per_tumor_melt$type =="met", "metastasis", quant_per_tumor_melt$type)
+
+quant_per_tumor_melt$type <- factor(quant_per_tumor_melt$type, levels = c("ctrl tissue","primary", "metastasis"))
+
+quant_per_tumor_melt$variable2 <- ifelse(quant_per_tumor_melt$variable=="nr_quant_proteins", 
+                                         " \nNr. of quantified\nproteins per sample, cohort#1\n ", 
+                                         " \nNr. of transcripts\nwith TPM>0 per sample, cohort#1\n ")
+quant_per_tumor_melt$variable2 <- ifelse(quant_per_tumor_melt$variable=="nr_quant_proteins" & 
+                                           quant_per_tumor_melt$cohort=="cohort2", 
+                                         " \nNr. of quantified\nproteins per sample, cohort#2\n ", 
+                                         quant_per_tumor_melt$variable2)
+
+
+quant_per_tumor_melt <- quant_per_tumor_melt %>%
+  filter(variable %in% c("nr_quant_proteins", "nr_transcripts") & !is.na(value))
+
+
+quant_per_tumor_melt$variable2 = factor(recode(quant_per_tumor_melt$variable2,
+                       " \nNr. of quantified\nproteins per sample, cohort#2\n " = "Nr. of quantified\nproteins per sample,\ncohort#2",
+                       " \nNr. of quantified\nproteins per sample, cohort#1\n " = "Nr. of quantified\nproteins per sample,\ncohort#1",
+                       " \nNr. of transcripts\nwith TPM>0 per sample, cohort#1\n " = "Nr. of transcripts\nwith TPM>0 per sample,\ncohort#1"),
+                      levels = c("Nr. of transcripts\nwith TPM>0 per sample,\ncohort#1",
+                                 "Nr. of quantified\nproteins per sample,\ncohort#1",
+                                 "Nr. of quantified\nproteins per sample,\ncohort#2"))
+
+ggplot(quant_per_tumor_melt, aes(x = type, y = value, fill = type)) +
+  
+  geom_jitter(width = 0.2, size = 1, alpha = 0.5, aes(color=type)) +
+  #geom_text_repel(force = 10, color = "black", seed = 202408, 
+  #                min.segment.length = 0.5, size = 3) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  #scale_fill_manual(values = colorlist$omics_data) +
+  scale_fill_manual(values = colorlist$type) +
+  scale_color_manual(values = colorlist$type) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_blank(),
+    panel.grid.minor = element_line(colour = "white"),
+    panel.grid.major = element_line(colour = "white"),
+    panel.background = element_rect(fill = "whitesmoke")
+  ) +
+  facet_grid(cols = vars(variable2), scales = "free", space = "free") +
+  ylab("Count") + xlab("") +
+  labs(fill = " ")+guides(color="none")
+
+ggsave("figs/nr_proteins_transcripts_boxplot.png")
+ggsave("figs/nr_proteins_transcripts_boxplot.pdf")
+ggsave("figs/nr_proteins_transcripts_boxplot.svg")
+
+
+```
+
+
+
+```{r , fig.width=15, fig.height=10}
+
+
+sample_annot_withrepl$'<10%_tumor' <- ifelse(sample_annot_withrepl$tumor<0.10 &
+                                                sample_annot_withrepl$type !="ctrl","yes","no")
+sample_annot_withrepl$'<10%_tumor' <- ifelse(sample_annot_withrepl$type =="ctrl","ctrl",sample_annot_withrepl$'<10%_tumor')
+
+sample_annot_withrepl$'quality_issue' <- ifelse(sample_annot_withrepl$tumor<=0.10 &
+                                                sample_annot_withrepl$type !="ctrl","≤10% tumor","no")
+sample_annot_withrepl$'quality_issue' <- ifelse(sample_annot_withrepl$type =="ctrl" &
+                                                  sample_annot_withrepl$normal<=0.10,"≤10% normal", 
+                                                sample_annot_withrepl$'quality_issue')
+sample_annot_withrepl$'quality_issue' <- ifelse(sample_annot_withrepl$type =="ctrl" &
+                                                  sample_annot_withrepl$tumor==0.10,"10% tumor contamination", 
+                                                sample_annot_withrepl$'quality_issue')
+sample_annot_withrepl$'quality_issue' <- ifelse(is.na(sample_annot_withrepl$quality_issue) ,"unknown composition", 
+                                                sample_annot_withrepl$'quality_issue')
+
+
+source("helpers/color_list.R")
+
+cormat <- cor(as.matrix(filter_missingvalues(both_batchcorr,10)), method = "pearson", use = "pairwise.complete.obs")
+
+histology = sample_annot_withrepl[,c("tumor","stroma","necrosis","normal")]
+histology[is.na(histology)] <- 0
+
+lgd_hist = Legend(labels = c("tumor", "stroma", "necrosis", "normal"), title = "Histology", 
+             legend_gp = gpar(fill = colorlist$histology[c("tumor", "stroma", "necrosis", "normal")]))
+
+topannot <- HeatmapAnnotation(df = sample_annot_withrepl[colnames(cormat),
+                                                        c(#"nonnormal_sum",
+                                                          "quality_issue",
+                                                          "patient", "type",
+                                                          "origin", 
+                                                          "nr_quant_proteins",
+                                                          "cohort")],
+                              col = colorlist,
+                              "Hist." = anno_barplot(histology[colnames(cormat),],
+                                                     gp = gpar(fill =  colorlist$histology[c("tumor", "stroma", 
+                                                                                             "necrosis", "normal")],
+                                                               #lty="blank",
+                                                               lwd = 0.5,
+                                                               col = "lightgray"),
+                                                     border=TRUE,
+                                                     height = unit(1.5, "cm"),
+                                                     axis_param = list(
+                                                       side = "left",
+                                                       at = c(0.25,0.50,0.75), 
+                                                       labels = c("25%","50%", "75%") )),
+                              #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 12)),
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+ht = draw(Heatmap(cormat, top_annotation = topannot,
+        #column_split = gsub("subcutan","sub-\ncu-\ntan",gsub("cerebellum","cere-\nbel-\nlum",gsub("_","\n",gsub("peri","peri-\n",sample_annot_withrepl[colnames(cormat),"origin"])))),
+        #column_split = sample_annot_withrepl[colnames(cormat),"origin"],
+        name="Pearson\ncorr.",
+        col = colorlist$corr,
+        cluster_column_slices = TRUE,
+        height = unit(4,"cm"),
+        width = unit(ncol(cormat)*0.1,"cm"),
+        column_gap = unit(0.2,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+ht2 = draw(lgd_hist, x = unit(0.3, "npc"), y = unit(0.2, "npc"))
+
+annot_list = list(c(lgd_hist, 0.3, 0.2))
+
+export_heatmap_png(filename = "figs/unsupervised_clustering_prot_with_quality_comments", 
+                   width = 20, height=15, ht_object=ht, 
+                   annot_list = list(c(lgd_hist, 0.3, 0.2)))
+
+
+```
+
+
+```{r , fig.width=15, fig.height=10}
+topannot <- HeatmapAnnotation(df = sample_annot_withrepl[colnames(cormat),
+                                                        c(#"nonnormal_sum",
+                                                          #"quality_issue",
+                                                          "patient", "type",
+                                                          "origin", 
+                                                          #"nr_quant_proteins",
+                                                          "cohort")],
+                              col = colorlist,
+                              "Hist." = anno_barplot(histology[colnames(cormat),],
+                                                     gp = gpar(fill =  colorlist$histology[c("tumor", "stroma", 
+                                                                                             "necrosis", "normal")],
+                                                               #lty="blank",
+                                                               lwd = 0.5,
+                                                               col = "lightgray"),
+                                                     border=TRUE,
+                                                     height = unit(1.5, "cm"),
+                                                     axis_param = list(
+                                                       side = "left",
+                                                       at = c(0.25,0.50,0.75), 
+                                                       labels = c("25%","50%", "75%") )),
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+ht = draw(Heatmap(cormat, top_annotation = topannot,
+        name="Pearson\ncorr.",
+        col = colorlist$corr,
+        cluster_column_slices = TRUE,
+        height = unit(4,"cm"),
+        width = unit(ncol(cormat)*0.1,"cm"),
+        column_gap = unit(0.2,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+ht2 = draw(lgd_hist, x = unit(0.3, "npc"), y = unit(0.2, "npc"))
+
+annot_list = list(c(lgd_hist, 0.3, 0.2))
+
+export_heatmap_png(filename = "figs/unsupervised_clustering_prot", 
+                   width = 20, height=15, ht_object=ht, 
+                   annot_list = list(c(lgd_hist, 0.3, 0.2)))
+
+```
+
+```{r }
+summary(factor(sample_annot_withrepl$quality_issue))
+
+sample_annot_withrepl[sample_annot_withrepl$quality_issue %in% c("10% tumor contamination","≤10% tumor") &
+                       sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),"replicate_id"]
+
+sample_annot_withrepl[sample_annot_withrepl$quality_issue %in% c("≤10% normal") &
+                       sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),"replicate_id"]
+
+```
+
+
+```{r , fig.width=15, fig.height=10}
+
+cormat <- cor(as.matrix(rnaseq$filt_log2), method = "pearson", use = "pairwise.complete.obs")
+
+topannot <- HeatmapAnnotation(df = sample_annot_withrepl[colnames(cormat),
+                                                        c(#"nonnormal_sum",
+                                                          #"quality_issue",
+                                                          "ESTIMATE_stromal",
+                                                          "ESTIMATE_immune",
+                                                          "patient", "type",
+                                                          "origin", 
+                                                          #"nr_quant_proteins",
+                                                          "cohort")],
+                              col = colorlist,
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+ht = draw(Heatmap(cormat, top_annotation = topannot,
+        name="Pearson\ncorr.",
+        col = colorlist$corr,
+        cluster_column_slices = TRUE,
+        height = unit(4,"cm"),
+        width = unit(ncol(cormat)*0.1,"cm"),
+        column_gap = unit(0.2,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+
+
+export_heatmap_png(filename = "figs/unsupervised_clustering_rna", 
+                   width = 20, height=15, ht_object=ht)
+
+
+```
+
+
+
+# Correlation with histology
+
+
+
+```{r }
+sample_annot_proteomics = sample_annot_withrepl[!is.na(sample_annot_withrepl$nr_quant_proteins),]
+
+run_regression <- function(expr_vector, predictors_df) {
+  model_data <- cbind(Expression = expr_vector, predictors_df)
+  fit <- lm(Expression ~ tumor + stroma + necrosis, data = model_data)
+  tidy(fit)
+}
+
+tumors_proteomics = sample_annot_proteomics[sample_annot_proteomics$type!="ctrl" ,]
+
+results_list <- apply(filter_missingvalues(both_batchcorr[,tumors_proteomics$replicate_id],50), 
+                      1, 
+                      run_regression, 
+                      predictors_df = tumors_proteomics[, c("tumor", "stroma", "necrosis")])
+
+results_df <- bind_rows(results_list, .id = "Gene")
+
+results_filtered <- results_df %>%
+  filter(term %in% c("tumor", "stroma", "necrosis")) %>%
+  mutate(adj_p = p.adjust(p.value, method = "fdr"))
+
+
+
+
+filter_specific_genes <- function(results_df, goal, other1, other2 ,beta_cutoff = 2, pval_cutoff = 0.05) {
+  hits1 <- results_df %>%
+    filter(term == goal, estimate > beta_cutoff, adj_p < pval_cutoff) %>%
+    pull(Gene)
+  
+  hits2 <- results_df %>%
+    filter(term == other1, adj_p >= pval_cutoff) %>%
+    pull(Gene)
+  
+  hits3 <- results_df %>%
+    filter(term == other2, adj_p >= pval_cutoff) %>%
+    pull(Gene)
+  
+  selected_genes <- intersect(hits1, intersect(hits2, hits3))
+  
+  return(selected_genes)
+}
+
+
+
+tumor_associated = filter_specific_genes(results_df = results_filtered, 
+                                         goal = "tumor", 
+                                         other1 = "stroma", 
+                                         other2 = "necrosis",
+                                         beta_cutoff = 1.5, 
+                                         pval_cutoff = 0.05)
+stroma_associated = filter_specific_genes(results_df = results_filtered, 
+                                         goal = "stroma", 
+                                         other1 = "tumor", 
+                                         other2 = "necrosis",
+                                         beta_cutoff = 1.5, 
+                                         pval_cutoff = 0.05)
+necrosis_associated = filter_specific_genes(results_df = results_filtered, 
+                                         goal = "necrosis", 
+                                         other1 = "stroma", 
+                                         other2 = "tumor",
+                                         beta_cutoff = 1.5, 
+                                         pval_cutoff = 0.05)
+
+
+```
+
+
+```{r }
+
+desai24_raw = unique(as.data.frame(read_xlsx("files/Desai24_DataS3.xlsx")))
+
+desai24_annot <- data.frame(sample = colnames(desai24_raw)[-1],
+                            type = ifelse(grepl("Stroma",colnames(desai24_raw)[-1]),
+                                          "stroma", "tumor"))
+
+desai24_expr = desai24_raw[,-1]
+row.names(desai24_expr) = paste(desai24_raw[,1],seq(1,nrow(desai24_raw)),sep="_")
+
+group <- factor(ifelse(desai24_annot$type =="stroma",0,1))
+names(group) <- desai24_annot$sample
+design <- model.matrix(~ group)
+fit <- lmFit(filter_missingvalues(desai24_expr[,names(group)],50), design)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+dge_results_desai <- topTable(fit, coef = "group1", number=Inf)
+
+```
+
+
+```{r }
+
+tumor_associated_desai = unique(sapply(strsplit(row.names(dge_results_desai[dge_results_desai$logFC> (log2(1.5)) &
+                                             dge_results_desai$adj.P.Val<0.05,]),
+                                  split="_"),"[[",1))
+
+tumor_associated_desai_aliases = alias2Symbol(tumor_associated_desai)
+
+tumor_associated_desai_entrez = bitr(tumor_associated_desai_aliases,
+                                     fromType = "SYMBOL",
+                                     toType = "ENTREZID",
+                                     OrgDb = org.Hs.eg.db)
+
+
+stroma_associated_desai = unique(sapply(strsplit(row.names(dge_results_desai[dge_results_desai$logFC < -(log2(1.5)) &
+                                             dge_results_desai$adj.P.Val<0.05,]),
+                                  split="_"),"[[",1))
+
+stroma_associated_desai_aliases = alias2Symbol(stroma_associated_desai)
+
+stroma_associated_desai_entrez = bitr(stroma_associated_desai_aliases,
+                                     fromType = "SYMBOL",
+                                     toType = "ENTREZID",
+                                     OrgDb = org.Hs.eg.db)
+
+
+```
+
+```{r , fig.width=10, fig.height=10}
+
+histo_result_list = list(`Our data -\ntumor-associated proteins` = protein_annotation_nonredundant[tumor_associated,"selected_entrez_first"],
+                    `Desai et al., 2024 -\ntumor-associated proteins` = tumor_associated_desai_entrez$ENTREZID,
+                    `Our data -\nstroma-associated proteins` = protein_annotation_nonredundant[stroma_associated,"selected_entrez_first"],
+                    `Desai et al., 2024 -\nstroma-associated proteins` = stroma_associated_desai_entrez$ENTREZID)
+
+histo_result_list = lapply(histo_result_list, function(x){
+  x = na.omit(x)
+  x = x[x!=""]
+  return(unique(x))
+})
+
+```
+
+```{r , fig.width=7, fig.height=3.5}
+
+ht = UpSet(make_comb_mat(histo_result_list))
+
+draw(ht)
+grid.text("56", x = unit(0.36, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+grid.text("43", x = unit(0.45, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+
+
+```
+
+
+
+```{r }
+
+png(filename = "figs/overlap_with_desai24.png",
+    width = 7,height = 3.5, units = "in",res = 600)
+draw(ht)
+grid.text("56", x = unit(0.36, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+grid.text("43", x = unit(0.45, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+dev.off()
+
+
+svg(filename = "figs/overlap_with_desai24.svg",
+    width = 7,height = 3.5)
+draw(ht)
+grid.text("56", x = unit(0.36, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+grid.text("43", x = unit(0.45, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+dev.off()
+
+
+pdf(file = "figs/overlap_with_desai24.pdf",
+    width = 7,height = 3.5)
+draw(ht)
+grid.text("56", x = unit(0.36, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+grid.text("43", x = unit(0.45, "npc"), y = unit(0.7, "npc"), gp = gpar(col = "black", fontsize = 12))
+dev.off()
+
+
+```
+
+
+
+
+```{r , fig.width=10, fig.height=8}
+
+histology = tumors_proteomics[,c("tumor","stroma","necrosis","normal")]
+histology[is.na(histology)] <- 0
+
+tumors_prot_expr = both_batchcorr[,tumors_proteomics$replicate_id]
+
+topannot <- HeatmapAnnotation(df = tumors_proteomics[,
+                                                        c(#"quality_issue",
+                                                          #"patient", 
+                                                          "type",
+                                                          "origin")],#, 
+                                                          #"nr_quant_proteins",
+                                                          #"cohort")],
+                              col = colorlist,
+                              "Hist." = anno_barplot(histology[,],
+                                                     gp = gpar(fill =  colorlist$histology[c("tumor", "stroma", 
+                                                                                             "necrosis", "normal")],
+                                                               #lty="blank",
+                                                               lwd = 0.5,
+                                                               col = "lightgray"),
+                                                     border=TRUE,
+                                                     height = unit(1.5, "cm"),
+                                                     axis_param = list(
+                                                       side = "left",
+                                                       at = c(0.25,0.50,0.75), 
+                                                       labels = c("25%","50%", "75%") )),
+                              #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 12)),
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+ht = draw(Heatmap(t(scale(t(tumors_prot_expr[tumor_associated,]))), 
+                  top_annotation = topannot,
+        name="Z-score",
+        column_title = paste0("Tumor-associated proteins (",length(tumor_associated),")"),
+        col = colorlist$`z-score`,
+        cluster_column_slices = FALSE,
+        height = unit(4,"cm"),
+        width = unit(ncol(tumors_prot_expr)*0.1,"cm"),
+        column_gap = unit(0.6,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+
+export_heatmap_png(filename = "figs/tumor_associated_proteins_heatmap", 
+                   width = 10, height=8, ht_object=ht)
+
+ht = draw(Heatmap(t(scale(t(tumors_prot_expr[stroma_associated,]))), 
+                  top_annotation = topannot,
+        name="Z-score",
+        column_title = paste0("Stroma-associated proteins (",length(stroma_associated),")"),
+        col = colorlist$`z-score`,
+        cluster_column_slices = FALSE,
+        height = unit(4,"cm"),
+        width = unit(ncol(tumors_prot_expr)*0.1,"cm"),
+        column_gap = unit(0.6,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+
+
+export_heatmap_png(filename = "figs/stroma_associated_proteins_heatmap", 
+                   width = 10, height=8, ht_object=ht)
+
+ht = draw(Heatmap(t(scale(t(tumors_prot_expr[necrosis_associated,]))), 
+                  top_annotation = topannot,
+        name="Z-score",
+        column_title = paste0("Necrosis-associated proteins (",length(necrosis_associated),")"),
+        col = colorlist$`z-score`,
+        cluster_column_slices = FALSE,
+        height = unit(4,"cm"),
+        width = unit(ncol(tumors_prot_expr)*0.1,"cm"),
+        column_gap = unit(0.6,"cm"),
+        border = TRUE,
+        column_title_rot = 0,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+
+export_heatmap_png(filename = "figs/necrosis_associated_proteins_heatmap", 
+                   width = 10, height=8, ht_object=ht)
+
+```
+
+
+```{r }
+universe_proteins = unique(protein_annotation_nonredundant[protein_annotation_nonredundant$protein_group_ordered %in% results_df$Gene,"selected_entrez_first"])
+universe_proteins = universe_proteins[universe_proteins!=""]
+
+
+tumor_associated_proteins =   na.omit(unique(protein_annotation_nonredundant[protein_annotation_nonredundant$protein_group_ordered %in% tumor_associated,"selected_entrez_first"]))
+stroma_associated_proteins=  na.omit(unique(protein_annotation_nonredundant[protein_annotation_nonredundant$protein_group_ordered %in% stroma_associated,"selected_entrez_first"]))
+necrosis_associated_proteins=  na.omit(unique(protein_annotation_nonredundant[protein_annotation_nonredundant$protein_group_ordered %in% necrosis_associated,"selected_entrez_first"]))
+
+rerun_ora <- FALSE
+
+if (rerun_ora){
+  ora_tumor_content = kegg_and_reactome_ora(unique(tumor_associated_proteins), universe_proteins)
+  ora_stroma_content = kegg_and_reactome_ora(unique(stroma_associated_proteins), universe_proteins)
+  ora_necrosis_content = kegg_and_reactome_ora(unique(necrosis_associated_proteins), universe_proteins)
+  
+
+  all_genesets = kegg_and_reactome_ora(na.omit(unique(protein_annotation_nonredundant$selected_entrez_first),
+                                       unique(protein_annotation_nonredundant$selected_entrez_first)))
+  
+  save(ora_tumor_content,
+       ora_stroma_content,
+       ora_necrosis_content,
+       all_genesets,
+       file="rdata/histology_ora.RData")
+} else {
+  load("rdata/histology_ora.RData")
+}
+
+
+
+
+```
+
+
+```{r , fig.width=15, fig.height=15}
+
+#ora_res = ora_neg_tumors
+#p_or_padj = "p"
+#pcutoff = 0.05
+#plot_title = "pos"
+
+dotplot_custom <- function(ora_res, p_or_padj = "p", pcutoff = 0.05, plot_title){
+  
+  if (p_or_padj=="p"){
+    ora_res@result <- ora_res@result[ora_res@result$pvalue < pcutoff,]
+  } else {
+    ora_res@result <- ora_res@result[ora_res@result$p.adjust < pcutoff,]
+  }
+  ora_res@qvalueCutoff <- 1
+  
+  ora_res@result$Description <- paste(ora_res@result$Description,
+                                      ora_res@result$Database, sep = " -")
+  ora_res@result$category <- paste(ora_res@result$category,
+                                      ora_res@result$Database, sep = "\n")
+  
+  
+  g = dotplot(ora_res, 
+              showCategory=20)+ 
+    ggtitle(plot_title,
+            subtitle = paste0("filter: ",p_or_padj,"<",pcutoff,", top 20"))+
+    #facet_grid2(rows=vars(category), scales="free",space="free")+
+    theme(legend.position="bottom", legend.direction="vertical")+
+    scale_fill_continuous(
+      name = "Adjusted p-value",
+      low = "firebrick4", high = "white",
+      #colors = c("darkred","white"),
+      limits = c(0, 0.05),
+      oob = scales::squish
+    )#+
+    #scale_size_continuous(range=c(0.1,5),
+    #                      breaks = c(1,10,50,100,200))
+ 
+  return(g)
+}
+
+
+plot_grid(dotplot_custom(ora_res = ora_tumor_content,
+                                    pcutoff = 0.05,
+                                    plot_title = "tumor-associated"),
+                     dotplot_custom(ora_res = ora_stroma_content,
+                                    pcutoff = 0.05,
+                                    plot_title = "stroma-associated"),
+                     dotplot_custom(ora_res = ora_necrosis_content,
+                                    pcutoff = 0.05,
+                                    plot_title = "necrosis-associated"),
+                     ncol = 3,
+                     #labels = c('Cell Pellet','Enrichment map'),
+                     label_fontfamily = '',
+                     axis = "tblr",
+                     label_fontface = 'bold',
+                     label_size = 18,
+                     align = 'h',
+                     #rel_widths = c(1,1,1),
+                     rel_heights = c(1,0.75,0.5))
+
+
+
+
+ggsave(file="figs/histology_associated_proteins_ORA_verbose.png")
+ggsave(file="figs/histology_associated_proteins_ORA_verbose.svg")
+ggsave(file="figs/histology_associated_proteins_ORA_verbose.pdf")
+
+
+```
+
+```{r , fig.width=7, fig.height=3}
+
+ora_summary = rbind(ora_tumor_content@result[1:5,],
+                    ora_stroma_content@result[1:5,],
+                    ora_necrosis_content@result[1:5,])
+
+ora_summary$`enriched\nfor proteins\nassociated with` = c(rep("tumor",5),
+                                                          rep("stroma",5),
+                                                          rep("necrosis",5))
+
+#ora_summary$Description <- paste(ora_summary$Description,
+#                                      ora_summary$Database, sep = " -")
+ora_summary$Description = factor(ora_summary$Description,levels = rev(ora_summary$Description))
+
+
+ggplot(ora_summary, aes(x=Description,y=-log10(pvalue),
+                        fill=`enriched\nfor proteins\nassociated with`))+
+  geom_bar(stat="identity")+coord_flip()+theme_classic() +xlab("")+
+  scale_fill_manual(values=colorlist$histology) # blue-orange "#003a7d","#ff9d3a"
+
+
+ggsave(file="figs/histology_associated_proteins_ORA.png")
+ggsave(file="figs/histology_associated_proteins_ORA.svg")
+ggsave(file="figs/histology_associated_proteins_ORA.pdf")
+
+
+```
+
+
+```{r }
+results_df_wide = results_df %>%
+  pivot_wider(
+    id_cols = Gene,
+    names_from = term,
+    values_from = c(estimate, std.error, statistic, p.value),
+    names_glue = "{term}_{.value}"
+  )
+
+results_df_wide$tumor_associated = ifelse(results_df_wide$Gene %in% tumor_associated,"*","")
+results_df_wide$stroma_associated = ifelse(results_df_wide$Gene %in% stroma_associated,"*","")
+results_df_wide$necrosis_associated = ifelse(results_df_wide$Gene %in% necrosis_associated,"*","")
+
+colnames(results_df_wide)[1] = "protein_group"
+
+
+results_df_wide = merge(protein_annotation_nonredundant[,c("protein_group_ordered","selected_entrez_first", "gene_names")],
+                        results_df_wide,by.x="protein_group_ordered",by.y="protein_group")
+
+results_df_wide$tumor_associated_Desai2024 = ifelse(results_df_wide$selected_entrez_first %in%
+                                                      histo_result_list$`Desai et al., 2024 -
+tumor-associated proteins`,"*","")
+results_df_wide$stroma_associated_Desai2024 = ifelse(results_df_wide$selected_entrez_first %in%
+                                                      histo_result_list$`Desai et al., 2024 -
+stroma-associated proteins`,"*","")
+
+```
+
+
+```{r }
+
+save(results_df_wide,
+     file="rdata/histology_linregr.RData")
+
+hist_linregr = results_df_wide[results_df_wide$tumor_associated=="*" |
+                                 results_df_wide$stroma_associated =="*" |
+                                 results_df_wide$necrosis_associated=="*",c("protein_group_ordered",
+                                  "selected_entrez_first",
+                                  "gene_names",
+                                  "tumor_estimate",
+                                  "tumor_p.value",
+                                  "stroma_estimate",
+                                  "stroma_p.value",
+                                  "necrosis_estimate",
+                                  "necrosis_p.value",
+                                  "tumor_associated",
+                                  "tumor_associated_Desai2024",
+                                  "stroma_associated",
+                                  "stroma_associated_Desai2024",
+                                  "necrosis_associated")]
+
+colnames(hist_linregr) = c("Protein group",
+                                  "ENTREZ ID",
+                                  "Gene symbol",
+                                  "Regression coefficient (tumor)",
+                                  "P-value (tumor)",
+                                  "Regression coefficient (stroma)",
+                                  "P-value (stroma)",
+                                  "Regression coefficient (necrosis)",
+                                  "P-value (necrosis)",
+                                  "Tumor-associated (this study)",
+                                  "Tumor-associated (Desai et al., 2024)",
+                                  "Stroma-associated (this study)",
+                                  "Stroma-associated (Desai et al., 2024)",
+                                  "Necrosis-associated (this study")
+
+ora_tumor_content_export = ora_tumor_content@result[ora_tumor_content@result$pvalue<0.05,c("Database",
+                                                                                           "Description",
+                                                                                           "GeneRatio",
+                                                                                           "BgRatio",
+                                                                                           "pvalue",
+                                                                                           "p.adjust",
+                                                                                           "geneID_symbols")]
+
+
+colnames(ora_tumor_content_export) = c("Database",
+                                       "Description",
+                                       "Geneset ratio",
+                                       "Background ratio",
+                                       "P-value",
+                                       "Adjusted p-value",
+                                       "Gene symbols")
+ora_tumor_content_export$Dataset = "Tumor-associated proteins"
+
+
+
+ora_stroma_content_export = ora_stroma_content@result[ora_stroma_content@result$pvalue<0.05,c("Database",
+                                                                                           "Description",
+                                                                                           "GeneRatio",
+                                                                                           "BgRatio",
+                                                                                           "pvalue",
+                                                                                           "p.adjust",
+                                                                                           "geneID_symbols")]
+
+
+colnames(ora_stroma_content_export) = c("Database",
+                                       "Description",
+                                       "Geneset ratio",
+                                       "Background ratio",
+                                       "P-value",
+                                       "Adjusted p-value",
+                                       "Gene symbols")
+
+ora_stroma_content_export$Dataset = "Stroma-associated proteins"
+
+
+ora_necrosis_content_export = ora_necrosis_content@result[ora_necrosis_content@result$pvalue<0.05,c("Database",
+                                                                                           "Description",
+                                                                                           "GeneRatio",
+                                                                                           "BgRatio",
+                                                                                           "pvalue",
+                                                                                           "p.adjust",
+                                                                                           "geneID_symbols")]
+
+
+colnames(ora_necrosis_content_export) = c("Database",
+                                       "Description",
+                                       "Geneset ratio",
+                                       "Background ratio",
+                                       "P-value",
+                                       "Adjusted p-value",
+                                       "Gene symbols")
+
+ora_necrosis_content_export$Dataset = "Necrosis-associated proteins"
+
+
+ora_all = rbind(ora_tumor_content_export,ora_stroma_content_export,ora_necrosis_content_export)[,c("Dataset","Database",
+                                       "Description",
+                                       "Geneset ratio",
+                                       "Background ratio",
+                                       "P-value",
+                                       "Adjusted p-value",
+                                       "Gene symbols")]
+
+
+library(openxlsx)
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Linear regr.", gridLines = TRUE)
+writeData(wb, "Linear regr.", hist_linregr)
+addWorksheet(wb, sheet = "Overrepresentation analysis", gridLines = TRUE)
+writeData(wb, "Overrepresentation analysis", ora_all)
+saveWorkbook(wb, file = "supplementary_tables/Table S4 - Histology associations.xlsx", overwrite = TRUE)
+
+```
+
+
+
+```{r }
+
+```
+
+
+
+
+
+```{r }
+
+```

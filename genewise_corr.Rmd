@@ -1,0 +1,848 @@
+---
+title: "Gene-wise correlation"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+
+```{r}
+load("rdata/gene_protein_annotations.RData")
+load("rdata/sample_annotations.RData")
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl"),]
+# bad replicates are removed from the expr table in the next code chunk
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+
+
+rna_expr_filt <- rnaseq$filt_log2
+prot_expr <- prot_expr_1_cleaned_nooutliers
+```
+
+
+
+```{r }
+
+sample_annot_common <- unique(sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% intersect(colnames(rna_expr_filt) , colnames(prot_expr)),c("replicate_id", "sample_id")])
+
+rna_expr_filt_unique <- average_expr_data(rna_expr_filt,sample_annot_common)
+
+prot_expr_unique <- average_expr_data(prot_expr,sample_annot_common)
+
+
+```
+
+
+
+
+Create tables with unique genes
+
+```{r }
+
+rna_expr_filt_gene_sum <- select_gene_with_highest_expr(rna_expr_filt_unique, 
+                                                        gene_annotation[,c("ensembl_gene_id", "selected_entrez")])
+
+
+rna_expr_filt_gene <- rna_expr_filt_gene_sum$newtab
+rna_filter_summary <- rna_expr_filt_gene_sum$summary
+
+
+prot_expr_gene_sum <- select_gene_with_highest_expr(prot_expr_unique, 
+                                                    protein_annotation[,c("protein_group", "selected_entrez_first")])
+
+
+prot_expr_gene <- prot_expr_gene_sum$newtab
+prot_filter_summary <- prot_expr_gene_sum$summary
+
+
+prot_expr_tumor_filt <- filter_missingvalues(prot_expr_gene[,!grepl("_ctrl",colnames(prot_expr_gene)) ],50)
+prot_expr_ctrl_filt <- filter_missingvalues(prot_expr_gene[,grepl("_ctrl",colnames(prot_expr_gene))],50)
+
+
+
+```
+
+
+
+```{r }
+# Common genes across tumors
+genes_common_tumors <- intersect(row.names(prot_expr_tumor_filt), 
+                          row.names(rna_expr_filt_gene))
+genes_common_tumors <- genes_common_tumors[genes_common_tumors!="" & !is.na(genes_common_tumors)]
+
+genes_common_ctrls <- intersect(row.names(prot_expr_ctrl_filt), 
+                          row.names(rna_expr_filt_gene))
+genes_common_ctrls <- genes_common_ctrls[genes_common_ctrls!="" & !is.na(genes_common_ctrls)]
+
+
+tumor_samples <- sample_annot_common[!grepl("ctrl",sample_annot_common$sample_id),]
+colnames(prot_expr_tumor_filt) %in% tumor_samples$sample_id
+ctrl_samples <- sample_annot_common[grepl("ctrl",sample_annot_common$sample_id),]
+colnames(prot_expr_ctrl_filt) %in% ctrl_samples$sample_id
+
+
+rna_expr_common_tumor <- as.data.frame(rna_expr_filt_gene[genes_common_tumors,tumor_samples$sample_id])
+#rna_expr_mor_common_tumor <- as.data.frame(rna_expr_filt_mor_gene[genes_common_tumors,tumor_samples$rnaseq_new_id])
+#colnames(rna_expr_mor_common_tumor) <- tumor_samples$original_id
+
+rna_expr_common_ctrls <- as.data.frame(rna_expr_filt_gene[genes_common_ctrls,ctrl_samples$sample_id])
+#rna_expr_mor_common_ctrls <- as.data.frame(rna_expr_filt_mor_gene[genes_common_ctrls,ctrl_samples$rnaseq_new_id])
+#colnames(rna_expr_mor_common_ctrls) <- ctrl_samples$original_id
+
+
+prot_common_tumors <- prot_expr_tumor_filt[genes_common_tumors,tumor_samples$sample_id]
+
+prot_common_ctrls <- prot_expr_ctrl_filt[genes_common_ctrls,ctrl_samples$sample_id]
+
+
+```
+
+
+
+# Calculate correlations
+
+
+```{r }
+
+#df1 <- rna_expr_common_tumor
+#df2 <- prot_common_tumors
+#method <- "spearman"
+
+correlation_test <- function(df1, df2, method){
+  if (!all(row.names(df1) == row.names(df2))){
+    return(NA)
+    print("row names do not match!")
+  }
+  
+  if (!all(colnames(df1) == colnames(df2))){
+    return(NA)
+    print("column names do not match!")
+  }
+  
+  
+  if (method %in% c("pearson","spearman")){
+    
+    cor_res <- lapply(seq(1,nrow(df1)),function(x){
+      #print(x)                    
+      cr <- cor.test(as.numeric(df1[x,]), 
+               as.numeric(df2[x,]), method = method,
+               use="pairwise.complete.obs", exact = FALSE)
+      return(data.frame(gene = row.names(df1)[x],
+                        cor = cr$estimate,
+                  pvalue = cr$p.value))
+    })
+    
+    cor_res_df <- do.call(rbind,cor_res)
+    
+    
+  } else if (method =="bicor"){
+    
+    
+    cor_res <- lapply(seq(1,nrow(df1)),function(x){
+      #print(x)                    
+      cr <- WGCNA::bicorAndPvalue(as.numeric(df1[x,]), 
+               as.numeric(df2[x,]),
+               use="pairwise.complete.obs")
+      return(data.frame(gene = row.names(df1)[x],
+                        cor = cr[["bicor"]],
+                  pvalue = cr[["p"]]))
+    })
+    
+    cor_res_df <- do.call(rbind,cor_res)
+    
+    
+  }
+  
+  
+  cor_res_df$adjp <- p.adjust(cor_res_df$pvalue, method = "fdr")
+  
+  return(cor_res_df)
+  
+}
+
+
+tumors_tpm_spearman <- correlation_test(rna_expr_common_tumor, prot_common_tumors, "spearman")
+ctrls_tpm_spearman <- correlation_test(rna_expr_common_ctrls, prot_common_ctrls, "spearman")
+
+```
+
+
+
+```{r }
+
+summary(tumors_tpm_spearman$cor, na.rm=T)
+summary(ctrls_tpm_spearman$cor, na.rm=T)
+
+```
+
+
+
+```{r }
+proteinatlas <- read.delim("files/proteinatlas.tsv")
+entrez_mapping_proteinatlas = bitr(proteinatlas$Gene, 
+                                   fromType="SYMBOL", 
+                                   toType = "ENTREZID", 
+                                   OrgDb=org.Hs.eg.db,
+                                   drop = FALSE)
+#'select()' returned 1:many mapping between keys and columns
+#Warning: 2.53% of input gene IDs are fail to map...
+proteinatlas[duplicated(proteinatlas$SYMBOL),]
+# no duplicated
+
+
+proteinatlas <- merge(proteinatlas, entrez_mapping_proteinatlas, by.x="Gene",by.y="SYMBOL", all.x=T)
+
+#proteinatlas$Gene2 <- ifelse(proteinatlas$Gene =="C17orf49", "BAP18", proteinatlas$Gene)
+
+proteinatlas$At_least_tissue_enhanced_tumors <- ifelse(grepl("adrenal gland|brain|heart muscle|liver|lung|lymphoid tissue",proteinatlas$RNA.tissue.specific.nTPM),
+                                       "*","")
+proteinatlas$At_least_tissue_enhanced_ctrls <- ifelse(grepl("brain|liver|lung",proteinatlas$RNA.tissue.specific.nTPM),
+                                       "*","")
+
+proteinatlas$Tissue_specific_tumor_sites <- ifelse(grepl("adrenal gland|brain|heart muscle|liver|lung|lymphoid tissue",proteinatlas$RNA.tissue.specific.nTPM) &
+                                                     proteinatlas$RNA.tissue.specificity =="Tissue enriched",
+                                       "*","")
+proteinatlas$Tissue_specific_ctrl_sites <- ifelse(grepl("brain|liver|lung",proteinatlas$RNA.tissue.specific.nTPM)&
+                                                     proteinatlas$RNA.tissue.specificity =="Tissue enriched",
+                                       "*","")
+
+
+
+#GSTT1 is missing from HPA
+ctrls_tpm_spearman_hpa <- merge(ctrls_tpm_spearman, proteinatlas[,c("ENTREZID", "RNA.tissue.specificity","RNA.tissue.specific.nTPM","At_least_tissue_enhanced_ctrls","Tissue_specific_ctrl_sites")],by.x="gene",by.y="ENTREZID", all.x=T)
+ctrls_tpm_spearman_hpa$At_least_tissue_enhanced_ctrls <- ifelse(is.na(ctrls_tpm_spearman_hpa$At_least_tissue_enhanced_ctrls),"",ctrls_tpm_spearman_hpa$At_least_tissue_enhanced_ctrls)
+ctrls_tpm_spearman_hpa$Tissue_specific_ctrl_sites <- ifelse(is.na(ctrls_tpm_spearman_hpa$Tissue_specific_ctrl_sites),"",ctrls_tpm_spearman_hpa$Tissue_specific_ctrl_sites)
+
+tumors_tpm_spearman_hpa <- merge(tumors_tpm_spearman, proteinatlas[,c("ENTREZID", "RNA.tissue.specificity","RNA.tissue.specific.nTPM","At_least_tissue_enhanced_tumors", "Tissue_specific_tumor_sites")],by.x="gene",by.y="ENTREZID", all.x=T)
+tumors_tpm_spearman_hpa$At_least_tissue_enhanced_tumors <- ifelse(is.na(tumors_tpm_spearman_hpa$At_least_tissue_enhanced_tumors),"",tumors_tpm_spearman_hpa$At_least_tissue_enhanced_tumors)
+tumors_tpm_spearman_hpa$Tissue_specific_tumor_sites <- ifelse(is.na(tumors_tpm_spearman_hpa$Tissue_specific_tumor_sites),"",tumors_tpm_spearman_hpa$At_least_tissue_enhanced_tumors)
+```
+
+
+
+```{r , fig.width=10, fig.height=5}
+
+ctrls_tpm_spearman_hpa$`Tissue specific across\nany of the ctrl sites` <- ifelse(ctrls_tpm_spearman_hpa$At_least_tissue_enhanced_ctrls =="*","yes","no")
+
+tumors_tpm_spearman_hpa$`Tissue specific across\nany of the tumor sites` <- ifelse(tumors_tpm_spearman_hpa$At_least_tissue_enhanced_tumors =="*","yes","no")
+
+
+g1 <- ggplot(ctrls_tpm_spearman_hpa, aes(cor, fill = `Tissue specific across\nany of the ctrl sites`)) +
+  geom_histogram(bins = 40)+ scale_fill_manual(values=c("darkgray",'black'))+xlab("Spearman corr. coeff.")+theme_classic()#+ggtitle("Gene-wise corr.\nacross ctrl tissues")
+g2 <- ggplot(tumors_tpm_spearman_hpa, aes(cor, fill = `Tissue specific across\nany of the tumor sites`)) +
+  geom_histogram(bins = 40)+ scale_fill_manual(values=c("darkgray",'black'))+xlab("Spearman corr. coeff.")+theme_classic()#+ggtitle("Gene-wise corr.\nacross tumor tissues")
+g3 <- ggplot(ctrls_tpm_spearman_hpa, aes(cor, fill = `Tissue specific across\nany of the ctrl sites`)) +
+  geom_density(alpha=0.5)+ scale_fill_manual(values=c("darkgray",'black'))+xlab("Spearman corr. coeff.")+theme_classic()#+ggtitle("Gene-wise corr.\nacross ctrl tissues")
+g4 <- ggplot(tumors_tpm_spearman_hpa, aes(cor, fill = `Tissue specific across\nany of the tumor sites`)) +
+  geom_density(alpha=0.5)+ scale_fill_manual(values=c("darkgray",'black'))+xlab("Spearman corr. coeff.")+theme_classic()#+ggtitle("Gene-wise corr.\nacross tumor tissues")
+
+
+
+# extract the legend from one of the plots
+legend_ctrl <- get_legend(
+  # create some space to the left of the legend
+  g1 + theme(legend.box.margin = margin(0, 0, 0, 12),
+             legend.direction = "horizontal")+
+    guides(fill=guide_legend(title="Tissue-enhanced or\ngroup/tissue-enriched gene\nacross any of the\nctrl sites"))
+)
+legend_tumor <- get_legend(
+  # create some space to the left of the legend
+  g1 + theme(legend.box.margin = margin(0, 0, 0, 12),
+             legend.direction = "horizontal")+
+    guides(fill=guide_legend(title="Tissue-enhanced or\ngroup/tissue-enriched gene\nacross any of the\ntumor sites"))
+)
+
+# add the legend to the row we made earlier. Give it one-third of 
+# the width of one plot (via rel_widths).
+plot_grid(g1+ theme(legend.position="none"),
+          g2+ theme(legend.position="none"),
+          g3+ theme(legend.position="none"),
+          g4+ theme(legend.position="none"),
+          legend_ctrl,legend_tumor,
+          ncol = 2,
+          labels = c('Gene-wise corr.\nacross ctrl tissues',
+                     'Gene-wise corr.\nacross tumor tissues'),
+          label_fontfamily = '',
+          axis = "tblr",
+          label_fontface = 'bold',
+          label_size = 12,
+          align = 'hv',
+          rel_widths = c(1,1,1),
+          rel_heights = c(1,1,0.5))+ bgcolor("white")
+
+
+
+ggsave("figs/genewise_corr_ctrl_vs_tumors_tissue_specific.png")
+ggsave("figs/genewise_corr_ctrl_vs_tumors_tissue_specific.pdf")
+ggsave("figs/genewise_corr_ctrl_vs_tumors_tissue_specific.svg")
+
+```
+
+
+
+
+```{r }
+ctrls_tpm_spearman_hpa[ctrls_tpm_spearman_hpa$gene =="429",] #ASCL1
+tumors_tpm_spearman_hpa[tumors_tpm_spearman_hpa$gene =="429",]
+
+```
+
+# ORA
+
+```{r }
+
+limit = 0.4
+nocorr_limit = 0.2
+
+pos_correlating_tumors <- unique(tumors_tpm_spearman_hpa[!is.na(tumors_tpm_spearman_hpa$cor) & tumors_tpm_spearman_hpa$cor >= limit &
+                                                 tumors_tpm_spearman_hpa$adjp <= 0.05,"gene"])
+neg_correlating_tumors <- unique(tumors_tpm_spearman_hpa[!is.na(tumors_tpm_spearman_hpa$cor) & tumors_tpm_spearman_hpa$cor <= -limit &
+                                                 tumors_tpm_spearman_hpa$adjp <= 0.05,"gene"])
+not_correlating_tumors <- unique(tumors_tpm_spearman_hpa[!is.na(tumors_tpm_spearman_hpa$cor) & abs(tumors_tpm_spearman_hpa$cor) <= nocorr_limit,"gene"])
+
+
+pos_correlating_ctrls <- unique(ctrls_tpm_spearman_hpa[!is.na(ctrls_tpm_spearman_hpa$cor) & ctrls_tpm_spearman_hpa$cor >= limit &
+                                                 ctrls_tpm_spearman_hpa$adjp <= 0.05,"gene"])
+neg_correlating_ctrls <- unique(ctrls_tpm_spearman_hpa[!is.na(ctrls_tpm_spearman_hpa$cor) & ctrls_tpm_spearman_hpa$cor <= -limit &
+                                                 ctrls_tpm_spearman_hpa$adjp <= 0.05,"gene"])
+not_correlating_ctrls <- unique(ctrls_tpm_spearman_hpa[!is.na(ctrls_tpm_spearman_hpa$cor) & abs(ctrls_tpm_spearman_hpa$cor) <= nocorr_limit,"gene"])
+
+
+rerun_ora <- FALSE
+
+if (rerun_ora){
+  ora_pos_tumors = kegg_and_reactome_ora(unique(pos_correlating_tumors), unique(tumors_tpm_spearman_hpa$gene))
+  ora_nocorr_tumors = kegg_and_reactome_ora(unique(not_correlating_tumors), unique(tumors_tpm_spearman_hpa$gene))
+  ora_neg_tumors = kegg_and_reactome_ora(unique(neg_correlating_tumors), unique(tumors_tpm_spearman_hpa$gene))
+  
+  ora_pos_ctrls = kegg_and_reactome_ora(unique(pos_correlating_ctrls), unique(ctrls_tpm_spearman_hpa$gene))
+  ora_nocorr_ctrls = kegg_and_reactome_ora(unique(not_correlating_ctrls), unique(ctrls_tpm_spearman_hpa$gene))
+  ora_neg_ctrls = kegg_and_reactome_ora(unique(neg_correlating_ctrls), unique(ctrls_tpm_spearman_hpa$gene))
+  
+  
+  all_genesets = kegg_and_reactome_ora(unique(protein_annotation$selected_entrez_first,
+                                              gene_annotation$selected_entrez),
+                                       unique(protein_annotation$selected_entrez_first,
+                                              gene_annotation$selected_entrez))
+  
+  save(ora_pos_tumors,
+       ora_nocorr_tumors,
+       ora_neg_tumors,
+       ora_pos_ctrls,
+       ora_nocorr_ctrls,
+       ora_neg_ctrls,
+       all_genesets,
+       file="rdata/genewise_corr_ora.RData")
+} else {
+  load("rdata/genewise_corr_ora.RData")
+}
+
+
+
+
+
+```
+
+
+```{r , fig.width=15, fig.height=25}
+
+
+dotplot_custom <- function(ora_res, p_or_padj = "p", pcutoff = 0.05, plot_title){
+  
+  if (p_or_padj=="p"){
+    ora_res@result <- ora_res@result[ora_res@result$pvalue < pcutoff,]
+  } else {
+    ora_res@result <- ora_res@result[ora_res@result$p.adjust < pcutoff,]
+  }
+  ora_res@qvalueCutoff <- 1
+  
+  ora_res@result$Description <- paste(ora_res@result$Description,
+                                      ora_res@result$Database, sep = " -")
+  ora_res@result$category <- paste(ora_res@result$category,
+                                      ora_res@result$Database, sep = "\n")
+  
+  
+  g = dotplot(ora_res, 
+              showCategory=20)+ 
+    ggtitle(plot_title,
+            subtitle = paste0("filter: ",p_or_padj,"<",pcutoff,", top 20"))+
+    #facet_grid2(rows=vars(category), scales="free",space="free")+
+    theme(legend.position="bottom", legend.direction="vertical")+
+    scale_fill_continuous(
+      name = "Adjusted p-value",
+      low = "firebrick4", high = "white",
+      #colors = c("darkred","white"),
+      limits = c(0, 0.05),
+      oob = scales::squish
+    )#+
+    #scale_size_continuous(range=c(0.1,5),
+    #                      breaks = c(1,10,50,100,200))
+ 
+  return(g)
+}
+
+
+top_row <- plot_grid(dotplot_custom(ora_res = ora_pos_tumors,
+                                    pcutoff = 0.05,
+                                    plot_title = "pos. corr. in tumors"),
+                     dotplot_custom(ora_res = ora_nocorr_tumors,
+                                    pcutoff = 0.05,
+                                    plot_title = "no corr. in tumors"),
+                     dotplot_custom(ora_res = ora_neg_tumors,
+                                    pcutoff = 0.05,
+                                    plot_title = "neg. corr. in tumors"),
+                     ncol = 3,
+                     #labels = c('Cell Pellet','Enrichment map'),
+                     label_fontfamily = '',
+                     axis = "tblr",
+                     label_fontface = 'bold',
+                     label_size = 18,
+                     align = 'h',
+                     #rel_widths = c(1,1,1),
+                     rel_heights = c(1,0.75,0.5))
+
+bottom_row <- plot_grid(dotplot_custom(ora_res = ora_pos_ctrls,
+                                    pcutoff = 0.05,
+                                    plot_title = "pos. corr. in ctrls"),
+                     dotplot_custom(ora_res = ora_nocorr_ctrls,
+                                    pcutoff = 0.05,
+                                    plot_title = "no corr. in ctrls"),
+                     dotplot_custom(ora_res = ora_neg_ctrls,
+                                    pcutoff = 0.05,
+                                    plot_title = "neg. corr. in ctrls"),
+                     ncol = 3,
+                     #labels = c('Cell Pellet','Enrichment map'),
+                     label_fontfamily = '',
+                     axis = "tblr",
+                     label_fontface = 'bold',
+                     label_size = 18,
+                     align = 'h',
+                     #rel_widths = c(1,1,1),
+                     rel_heights = c(1,0.75,0.5))
+
+plot_grid(top_row, bottom_row, ncol = 1,
+          rel_heights = c(0.75,1))
+
+
+ggsave("figs/genewise_corr_top_pathways.png")
+ggsave("figs/genewise_corr_top_pathways.pdf")
+ggsave("figs/genewise_corr_top_pathways.svg")
+
+```
+
+
+
+```{r , fig.width=12, fig.height=5}
+
+
+
+cor_df_for_plot <- tumors_tpm_spearman
+
+genesets_to_use <- data.frame(Description = c("Lagging Strand Synthesis",
+                                                "RHO GTPase cycle",
+                                                "Interferon gamma signaling", 
+                                                "Glutathione metabolism",  # pos
+                                                
+                                                "Mitochondrial translation",
+                                                "Complex I biogenesis",
+                                                "Oxidative phosphorylation", 
+                                                "Complement and coagulation cascades",  # no
+                                                
+                                                "Negative epigenetic regulation of rRNA expression",
+                                                "Degradation of the extracellular matrix",
+                                                "Caspase activation via extrinsic apoptotic signalling pathway", 
+                                                "Nucleocytoplasmic transport"),  # neg),
+                              new_name = NA,
+                              result = c("pos", "pos",
+                                         "pos", "pos",
+                                                
+                                                "no", "no",
+                                                "no", "no",
+                                         "neg", "neg",
+                                         "neg", "neg"))
+
+
+genesets_to_use <- merge(genesets_to_use, 
+                         all_genesets@result[,c("ID","Description")], 
+                         by="Description", sort=FALSE)
+
+
+
+for (i in 1:nrow(genesets_to_use)){
+  
+  cor_df_for_plot[,genesets_to_use$Description[i]] <- ifelse(cor_df_for_plot$gene %in% all_genesets[[genesets_to_use$ID[i]]],
+                                                                  1,0)
+  
+}
+
+
+cor_df_for_plot_reorganized <- cor_df_for_plot[,c("gene", "cor", genesets_to_use$Description)]
+
+#library(tidyverse)
+# Reshape the data to long format
+cor_df_for_plot_reorganized <- cor_df_for_plot_reorganized %>%
+  tidyr::pivot_longer(cols = -c(gene, cor), names_to = "pathway", values_to = "member") 
+
+
+cor_df_for_plot_reorganized <- merge(cor_df_for_plot_reorganized, 
+                                     genesets_to_use[,c("Description", "result")], 
+                                     by.x="pathway", by.y="Description")
+
+
+
+
+source("helpers/color_list.R")
+
+
+cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor >=0.40, 
+                                                  "positive", "not highlighted")
+cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor <= -0.40, 
+                                                  "negative", cor_df_for_plot_reorganized$correlation)
+cor_df_for_plot_reorganized$correlation <- ifelse(abs(cor_df_for_plot_reorganized$cor) < 0.2, 
+                                                  "no correlation", cor_df_for_plot_reorganized$correlation)
+
+
+# Plot the histogram with density
+p <- ggplot(cor_df_for_plot_reorganized, aes(x = cor, fill=correlation)) +
+  geom_histogram(binwidth = 0.005, alpha = 1) + 
+  gghighlight()+ scale_fill_manual(values=colorlist$correlation)+
+  xlim(-1,1)+
+  geom_vline(xintercept = c(0.39), linetype = "dashed", color = c("black"), size = 0.5) +
+  annotate("text", x = 0.3, y = 500, label = "mean=0.37", color = "black", angle = 90, vjust = 1.5) +
+  annotate("text", x = -0.7, y = 700, label = "29 genes with\ncorr. ≤ -0.4", 
+           color = colorlist$correlation["negative"], angle = 0, vjust = 1.5) +
+  annotate("text", x = -0.1, y = 900, label = "1840 genes with\n|corr.| < 0.2", 
+           color = colorlist$correlation["no correlation"], angle = 0, vjust = 1.5) +
+  annotate("text", x = 0.85, y = 1000, label = "3985 genes with\ncorr. ≥ 0.4", 
+           color = colorlist$correlation["positive"], angle = 0, vjust = 1.5) +
+  #annotate("text", x = 0.5, y = 0.8, label = "median = 0.50", color = "black", angle = 90, vjust = 1.5) +
+  labs(title = "Gene-wise mRNA-protein correlation across the tumors",
+       x = "",
+       y = "Count") +
+  theme_classic()
+
+#print(p)
+
+
+
+# Ensure pathways are factors and ordered
+cor_df_for_plot_reorganized$pathway <- factor(cor_df_for_plot_reorganized$pathway, 
+                                              levels = rev(genesets_to_use$Description))
+
+text_col_1 = setNames(c("#a00000", "black","#1a80bb"),
+                    c("pos","no","neg"))
+
+text_col <- sapply(rev(genesets_to_use$Description), function(x){
+  text_col_1[genesets_to_use[genesets_to_use$Description == x,"result"]]
+}) 
+
+
+cor_df_for_plot_reorganized$member_color <- "no_highlight"
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 , "not_interesting", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     cor_df_for_plot_reorganized$cor >=0.40, "cor", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     abs(cor_df_for_plot_reorganized$cor) <0.2, "nocorr", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     cor_df_for_plot_reorganized$cor <= -0.40, "neg_corr", 
+                                                   cor_df_for_plot_reorganized$member_color)
+
+# Create the plot
+p2 <- ggplot(cor_df_for_plot_reorganized, aes(x = cor, y = pathway)) +
+  geom_tile(aes(fill = as.factor(member_color)), height = 0.4, 
+            width = ifelse(cor_df_for_plot_reorganized$member == 1, 0.004, 0.0000000000000001)) +
+  scale_fill_manual(values = c("cor" = "#a00000", "no_highlight" = "white",
+                               "not_interesting" = "snow3", "nocorr" = "black", "neg_corr" = "#1a80bb")) +
+  theme_bw() +
+  xlim(-1,1)+
+  geom_vline(xintercept = c(0.4), linetype = "dashed", color = c("#a00000"), size = 0.5) +
+  geom_vline(xintercept = c(1), linetype = "dashed", color = c("#a00000"), size = 0.5) +
+  geom_vline(xintercept = c(-0.2), linetype = "dashed", color = c("black"), size = 0.5) +
+  geom_vline(xintercept = c(0.2), linetype = "dashed", color = c("black"), size = 0.5) +
+  geom_vline(xintercept = c(-0.4), linetype = "dashed", color = c(colorlist$correlation["negative"]), size = 0.5) +
+  geom_vline(xintercept = c(-1), linetype = "dashed", color = c(colorlist$correlation["negative"]), size = 0.5) +
+  labs(x = "Spearman correlation coefficient", y = "Pathways", fill = "Member") +
+  scale_y_discrete(position = "right")+
+  theme(axis.text.y = element_text(size = 12, color= text_col),
+        axis.title.y.right = element_blank(),
+        #axis.title.y.left = element_text(size = 12, color= "black"),
+        axis.line = element_line(colour = "black"),
+        axis.line.y.left = element_line(colour = "black"),
+        axis.ticks.y = element_blank(),
+        legend.position = "none",
+        panel.background = element_rect(fill = "white",
+                                colour = "white",
+                                size = 0.5, linetype = "solid"))+
+  labs(title = "Enriched pathways for positively correlating (red), negatively correlating (blue),\nnot correlating (black) genes (one-sided Fisher's test, adj.p < 0.25)")+
+  theme(plot.title = element_text(size=10))
+
+
+combined_plot <- p / p2 + plot_layout(heights = c(1, 1.5))
+
+print(combined_plot)
+
+ggsave("figs/genewise_corr_tumors.png")
+ggsave("figs/genewise_corr_tumors.pdf")
+ggsave("figs/genewise_corr_tumors.svg")
+
+```
+
+
+
+```{r , fig.width=10, fig.height=5}
+
+
+
+cor_df_for_plot <- ctrls_tpm_spearman
+
+
+genesets_to_use <- data.frame(Description = c("RHO GTPase Effectors",
+                                              "Cytoskeleton in muscle cells",
+                                                "Valine, leucine and isoleucine degradation",
+                                                "Fatty acid degradation",   # pos
+                                                
+                                                "Deadenylation-dependent mRNA decay",
+                                                "Regulation of PTEN stability and activity",
+                                                "RNA degradation", 
+                                                "Cyclin E associated events during G1/S transition",  # no
+                                                
+                                                "Peptide chain elongation",
+                                              "Eukaryotic Translation Elongation",
+                                                "Selenocysteine synthesis",
+                                                "Nonsense-Mediated Decay (NMD)"),  # neg),
+                              new_name = NA,
+                              result = c("pos", "pos",
+                                         "pos", "pos",
+                                                
+                                                "no", "no",
+                                                "no", "no",
+                                         "neg", "neg",
+                                         "neg", "neg"))
+
+genesets_to_use <- merge(genesets_to_use, 
+                         all_genesets@result[,c("ID","Description")], 
+                         by="Description", sort=FALSE)
+
+
+
+for (i in 1:nrow(genesets_to_use)){
+  
+  cor_df_for_plot[,genesets_to_use$Description[i]] <- ifelse(cor_df_for_plot$gene %in% all_genesets[[genesets_to_use$ID[i]]],
+                                                                  1,0)
+  
+}
+
+
+cor_df_for_plot_reorganized <- cor_df_for_plot[,c("gene", "cor", genesets_to_use$Description)]
+
+#library(tidyverse)
+# Reshape the data to long format
+cor_df_for_plot_reorganized <- cor_df_for_plot_reorganized %>%
+  tidyr::pivot_longer(cols = -c(gene, cor), names_to = "pathway", values_to = "member") 
+
+
+cor_df_for_plot_reorganized <- merge(cor_df_for_plot_reorganized, 
+                                     genesets_to_use[,c("Description", "result")], 
+                                     by.x="pathway", by.y="Description")
+
+
+
+
+source("helpers/color_list.R")
+
+
+cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor >=0.40, 
+                                                  "positive", "not highlighted")
+cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor <= -0.40, 
+                                                  "negative", cor_df_for_plot_reorganized$correlation)
+cor_df_for_plot_reorganized$correlation <- ifelse(abs(cor_df_for_plot_reorganized$cor) < 0.2, 
+                                                  "no correlation", cor_df_for_plot_reorganized$correlation)
+
+
+# Plot the histogram with density
+p <- ggplot(cor_df_for_plot_reorganized, aes(x = cor, fill=correlation)) +
+  geom_histogram(binwidth = 0.005, alpha = 1) + 
+  gghighlight()+ scale_fill_manual(values=colorlist$correlation)+
+  xlim(-1,1)+
+  geom_vline(xintercept = c(0.34), linetype = "dashed", color = c("black"), size = 0.5) +
+  annotate("text", x = 0.25, y = 500, label = "mean=0.34", color = "black", angle = 90, vjust = 1.5) +
+  annotate("text", x = -0.7, y = 700, label = "290 genes with\ncorr. ≤ -0.4", 
+           color = colorlist$correlation["negative"], angle = 0, vjust = 1.5) +
+  annotate("text", x = -0.1, y = 900, label = "1467 genes with\n|corr.| < 0.2", 
+           color = colorlist$correlation["no correlation"], angle = 0, vjust = 1.5) +
+  annotate("text", x = 0.85, y = 1200, label = "2700 genes with\ncorr. ≥ 0.4", 
+           color = colorlist$correlation["positive"], angle = 0, vjust = 1.5) +
+  #annotate("text", x = 0.5, y = 0.8, label = "median = 0.50", color = "black", angle = 90, vjust = 1.5) +
+  labs(title = "Gene-wise mRNA-protein correlation across the ctrls",
+       x = "",
+       y = "Count") +
+  theme_classic()
+
+#print(p)
+
+
+
+# Ensure pathways are factors and ordered
+cor_df_for_plot_reorganized$pathway <- factor(cor_df_for_plot_reorganized$pathway, 
+                                              levels = rev(genesets_to_use$Description))
+
+text_col_1 = setNames(c("#a00000", "black","#1a80bb"),
+                    c("pos","no","neg"))
+
+text_col <- sapply(rev(genesets_to_use$Description), function(x){
+  text_col_1[genesets_to_use[genesets_to_use$Description == x,"result"]]
+}) 
+
+
+cor_df_for_plot_reorganized$member_color <- "no_highlight"
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 , "not_interesting", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     cor_df_for_plot_reorganized$cor >=0.40, "cor", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     abs(cor_df_for_plot_reorganized$cor) <0.2, "nocorr", 
+                                                   cor_df_for_plot_reorganized$member_color)
+cor_df_for_plot_reorganized$member_color <- ifelse(cor_df_for_plot_reorganized$member==1 &
+                                                     cor_df_for_plot_reorganized$cor <= -0.40, "neg_corr", 
+                                                   cor_df_for_plot_reorganized$member_color)
+
+# Create the plot
+p2 <- ggplot(cor_df_for_plot_reorganized, aes(x = cor, y = pathway)) +
+  geom_tile(aes(fill = as.factor(member_color)), height = 0.4, 
+            width = ifelse(cor_df_for_plot_reorganized$member == 1, 0.004, 0.0000000000000001)) +
+  scale_fill_manual(values = c("cor" = "#a00000", "no_highlight" = "white",
+                               "not_interesting" = "snow3", "nocorr" = "black", "neg_corr" = "#1a80bb")) +
+  theme_bw() +
+  xlim(-1,1)+
+  geom_vline(xintercept = c(0.4), linetype = "dashed", color = c("#a00000"), size = 0.5) +
+  geom_vline(xintercept = c(1), linetype = "dashed", color = c("#a00000"), size = 0.5) +
+  geom_vline(xintercept = c(-0.2), linetype = "dashed", color = c("black"), size = 0.5) +
+  geom_vline(xintercept = c(0.2), linetype = "dashed", color = c("black"), size = 0.5) +
+  geom_vline(xintercept = c(-0.4), linetype = "dashed", color = c(colorlist$correlation["negative"]), size = 0.5) +
+  geom_vline(xintercept = c(-1), linetype = "dashed", color = c(colorlist$correlation["negative"]), size = 0.5) +
+  labs(x = "Spearman correlation coefficient", y = "Pathways", fill = "Member") +
+  scale_y_discrete(position = "right")+
+  theme(axis.text.y = element_text(size = 12, color= text_col),
+        axis.title.y.right = element_blank(),
+        #axis.title.y.left = element_text(size = 12, color= "black"),
+        axis.line = element_line(colour = "black"),
+        axis.line.y.left = element_line(colour = "black"),
+        axis.ticks.y = element_blank(),
+        legend.position = "none",
+        panel.background = element_rect(fill = "white",
+                                colour = "white",
+                                size = 0.5, linetype = "solid"))+
+  labs(title = "Enriched pathways for positively correlating (red), negatively correlating (blue),\nnot correlating (black) genes (one-sided Fisher's test, adj.p < 0.25)")+
+  theme(plot.title = element_text(size=10))
+
+
+combined_plot <- p / p2 + plot_layout(heights = c(1, 1.5))
+
+print(combined_plot)
+
+ggsave("figs/genewise_corr_ctrls.png")
+ggsave("figs/genewise_corr_ctrls.pdf")
+ggsave("figs/genewise_corr_ctrls.svg")
+
+```
+
+
+
+```{r }
+wb <- createWorkbook()
+
+ctrls_tpm_spearman_hpa_export = ctrls_tpm_spearman_hpa[,c("gene",
+                                                                "cor",
+                                                                "pvalue",
+                                                                "adjp",
+                                                                "Tissue specific across\nany of the ctrl sites")]
+colnames(ctrls_tpm_spearman_hpa_export) = c("ENTREZ ID",
+                                            "Spearman's rho",
+                                            "P-value",
+                                            "Adjusted p-value",
+                                            "Tissue specific across any of the ctrl sites")
+
+tumors_tpm_spearman_hpa_export = tumors_tpm_spearman_hpa[,c("gene",
+                                                                "cor",
+                                                                "pvalue",
+                                                                "adjp",
+                                                                "Tissue specific across\nany of the tumor sites")]
+colnames(tumors_tpm_spearman_hpa_export) = c("ENTREZ ID",
+                                            "Spearman's rho",
+                                            "P-value",
+                                            "Adjusted p-value",
+                                            "Tissue specific across any of the ctrl sites")
+
+
+ora_pos_ctrls@result$Dataset = "Ctrls - Positive corr"
+ora_nocorr_ctrls@result$Dataset = "Ctrls - No corr"
+ora_neg_ctrls@result$Dataset = "Ctrls - Negative corr"
+
+columns_to_use = c("Dataset","Database",
+                   "Description",
+                   "GeneRatio",
+                   "BgRatio",
+                   "pvalue",
+                   "p.adjust",
+                   "geneID_symbols")
+
+ora_res_all_ctrls = rbind(ora_pos_ctrls@result[ora_pos_ctrls@result$pvalue<0.05,columns_to_use],
+                          ora_nocorr_ctrls@result[ora_nocorr_ctrls@result$pvalue<0.05,columns_to_use],
+                          ora_neg_ctrls@result[ora_neg_ctrls@result$pvalue<0.05,columns_to_use])
+colnames(ora_res_all_ctrls) = c("Dataset","Database",
+                                "Description",
+                                "Geneset ratio",
+                                "Background ratio",
+                                "P-value",
+                                "Adjusted p-value",
+                                "Gene symbols")
+
+
+ora_pos_tumors@result$Dataset = "Tumors - Positive corr"
+ora_nocorr_tumors@result$Dataset = "Tumors - No corr"
+ora_neg_tumors@result$Dataset = "Tumors - Negative corr"
+
+ora_res_all_tumors = rbind(ora_pos_tumors@result[ora_pos_tumors@result$pvalue<0.05,columns_to_use],
+                          ora_nocorr_tumors@result[ora_nocorr_tumors@result$pvalue<0.05,columns_to_use],
+                          ora_neg_tumors@result[ora_neg_tumors@result$pvalue<0.05,columns_to_use])
+colnames(ora_res_all_tumors) = c("Dataset","Database",
+                                "Description",
+                                "Geneset ratio",
+                                "Background ratio",
+                                "P-value",
+                                "Adjusted p-value",
+                                "Gene symbols")
+
+
+addWorksheet(wb, sheet = "Correlation results - Ctrls", gridLines = TRUE)
+writeData(wb, "Correlation results - Ctrls", ctrls_tpm_spearman_hpa_export)
+addWorksheet(wb, sheet = "Correlation results - Tumors", gridLines = TRUE)
+writeData(wb, "Correlation results - Tumors", tumors_tpm_spearman_hpa_export)
+
+addWorksheet(wb, sheet = "Overrepr. analysis - Ctrls", gridLines = TRUE)
+writeData(wb, "Overrepr. analysis - Ctrls", ora_res_all_ctrls)
+addWorksheet(wb, sheet = "Overrepr. analysis - Tumors", gridLines = TRUE)
+writeData(wb, "Overrepr. analysis - Tumors", ora_res_all_tumors)
+
+saveWorkbook(wb, file = "supplementary_tables/Table S2 - Gene-wise correlations.xlsx", overwrite = TRUE)
+
+```
+
+
+```{r }
+
+```
+
+
+
+

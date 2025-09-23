@@ -1,0 +1,943 @@
+---
+title: "Tumor vs control comparisons"
+author: "Bea Szeitz"
+---
+
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+load("rdata/gene_protein_annotations.RData")
+protein_annotation = protein_annotation_nonredundant
+colnames(protein_annotation)[1] = "protein_group"
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+
+```
+
+
+# DEA
+
+
+```{r }
+txi <- readRDS("files/Gene_counts_tximport.rds")
+rnaseq_samples = sample_annot_withrepl[!is.na(sample_annot_withrepl$ESTIMATE_stromal),]
+row.names(rnaseq_samples) <- rnaseq_samples$rnaseq_id
+
+new_ids <- gsub("V:/SCLC/RapidAutopsy/RNAseq/","", names(colnames(txi$counts)), fixed = T)
+new_ids <- gsub("/salmon_quant","", new_ids, fixed = T)
+new_ids %in% rnaseq_samples$rnaseq_id
+
+sampleinfo <- data.frame(rna_seq_samplename = names(colnames(txi$counts)),
+                         rnaseq_id = new_ids)
+rnaseq_samples = merge(sampleinfo,rnaseq_samples, by="rnaseq_id")
+row.names(rnaseq_samples) = rnaseq_samples$rna_seq_samplename
+rnaseq_samples = rnaseq_samples[colnames(txi$counts),]
+
+design <- model.matrix(~ as.factor(ifelse(rnaseq_samples$type=="ctrl",0,1)))
+
+dge <- DGEList(counts = txi$counts)
+# Filter low-expressed genes
+keep <- filterByExpr(dge)
+dge <- dge[keep,, keep.lib.sizes = FALSE]
+summary(factor(keep))  # Shows how many genes were retained
+
+# Normalize with TMM
+dge <- calcNormFactors(dge)
+# Transform with voom
+v <- voom(dge, design, plot = TRUE)
+# Linear modeling and empirical Bayes moderation
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+# Get differential expression results
+dge_results_rnaseq <- topTable(fit, coef = ncol(design), number = Inf)
+
+dge_results_rnaseq = merge(dge_results_rnaseq,
+                           gene_annotation, by="row.names", all.x=T)
+
+```
+
+```{r }
+proteomic_samples <- sample_annot_withrepl[sample_annot_withrepl$proteomics=="*" &
+                                             !is.na(sample_annot_withrepl$proteomics),
+                                           ]
+row.names(proteomic_samples) <- proteomic_samples$replicate_id
+
+group <- factor(ifelse(proteomic_samples$type =="ctrl",0,1))
+names(group) <- proteomic_samples$replicate_id
+design <- model.matrix(~ group)
+fit <- lmFit(filter_missingvalues(both_batchcorr[,names(group)],50), design)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+dge_results_prot <- topTable(fit, coef = "group1", number=Inf)
+dge_results_prot <- merge(dge_results_prot, unique(protein_annotation[,c("protein_group",
+                                                                         "selected_entrez_first",
+                                                                         "gene_names")]), by.x="row.names", 
+                          by.y = "protein_group",all.x=T)
+
+```
+
+
+
+```{r }
+save(dge_results_prot,dge_results_rnaseq,
+     file="rdata/tumor_vs_ctrl_results.RData")
+```
+
+
+```{r }
+
+liu_results <- as.data.frame(read.xlsx("files/Liu2024_TableS3.xlsx", sheet = 2))
+
+liu_results$symbol_alias = alias2SymbolTable(liu_results$Gene.symbol)
+symbol_mapping_liu = bitr(liu_results$symbol_alias, 
+                              fromType="SYMBOL", 
+                              toType = "ENTREZID", 
+                              OrgDb=org.Hs.eg.db,
+                              drop = FALSE)
+
+liu_results = merge(liu_results, symbol_mapping_liu, by.x="symbol_alias", by.y="SYMBOL")
+
+liu_sclc_associated <- liu_results[liu_results$SCLC.associated.proteins=="TRUE" &!is.na(liu_results$SCLC.associated.proteins),"ENTREZID"]
+
+```
+
+
+
+```{r , fig.width=5, fig.height=4}
+lt = list(liu_sclc_associated = liu_sclc_associated,
+          prot_de = dge_results_prot[dge_results_prot$adj.P.Val<0.05 & 
+                                       dge_results_prot$logFC>0,"selected_entrez_first"],
+          #prot_ON_in_tumors = tumor_on$selected_entrez_first,
+          rna_de = dge_results_rnaseq[dge_results_rnaseq$adj.P.Val<0.05 & 
+                                       dge_results_rnaseq$logFC>0,"ENTREZID"])
+library(UpSetR)
+
+
+upset(fromList(lt), order.by = "freq",nsets =100,mb.ratio = c(0.5, 0.5),
+      nintersects = 1000)
+
+```
+
+
+```{r , fig.width=7, fig.height=3.5}
+
+liu_signif <- liu_results[liu_results$Log2.median.foldchange > 0 & liu_results$FDR < 0.05,
+                          "ENTREZID"]
+
+
+lt_cleaned = list(`This study - genes overexpressed in tumors (adj.p<0.05)` = lt$rna_de,
+          `This study - proteins overexpressed in tumors (adj.p<0.05)` = lt$prot_de,
+          `Liu et al., 2024 - proteins overexpressed in tumors (adj.p<0.05)` = liu_signif,
+          `Liu et al., 2024 - SCLC associated proteins` = lt$liu_sclc_associated)
+
+
+
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+#grid.text("Comparison between our study and the Liu et al., 2024 dataset", x = 0.5, y = 1,
+#          gp = gpar(fontsize = 10))
+
+
+png(filename = "figs/tumor_vs_ctrl_upsetplot_onlyUP.png",
+    width = 7, height = 3, units = "in",res = 600)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+svg(filename = "figs/tumor_vs_ctrl_upsetplot_onlyUP.svg",
+    width = 7, height = 3)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+pdf(file = "figs/tumor_vs_ctrl_upsetplot_onlyUP.pdf",
+    width = 7, height = 3)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+```
+
+```{r , fig.width=9, fig.height=3.5}
+
+liu_signif <- liu_results[liu_results$Log2.median.foldchange > 0 & liu_results$FDR < 0.05,
+                          "ENTREZID"]
+
+
+lt_cleaned = list(`This study - genes upregulated in tumors (adj.p<0.05)` = lt$rna_de,
+          `This study - proteins upregulated in tumors (adj.p<0.05)` = lt$prot_de,
+          `Liu et al., 2024 - proteins upregulated in tumors (adj.p<0.05)` = liu_signif,
+          `Liu et al., 2024 - SCLC associated proteins` = lt$liu_sclc_associated,
+          `This study - genes downregulated in tumors (adj.p<0.05)` = dge_results_rnaseq[dge_results_rnaseq$adj.P.Val<0.05 & 
+                                       dge_results_rnaseq$logFC<0,"ENTREZID"],
+          `This study - proteins downregulated in tumors (adj.p<0.05)` = dge_results_prot[dge_results_prot$adj.P.Val<0.05 & 
+                                       dge_results_prot$logFC<0,"selected_entrez_first"],
+          `Liu et al., 2024 - proteins downregulated in tumors (adj.p<0.05)` = liu_results[liu_results$Log2.median.foldchange < 0 & liu_results$FDR < 0.05,
+                          "ENTREZID"])
+
+
+
+upset(fromList(lt_cleaned), order.by = "freq",
+      nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+#grid.text("Comparison between our study and the Liu et al., 2024 dataset", x = 0.5, y = 1,
+#          gp = gpar(fontsize = 10))
+
+
+png(filename = "figs/tumor_vs_ctrl_upsetplot.png",
+    width = 9, height = 3, units = "in",res = 600)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+svg(filename = "figs/tumor_vs_ctrl_upsetplot.svg",
+    width = 9, height = 3)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+pdf(file = "figs/tumor_vs_ctrl_upsetplot.pdf",
+    width = 9, height = 3)
+upset(fromList(lt_cleaned), order.by = "freq",nsets =100,mb.ratio = c(0.7, 0.3),
+      nintersects = 1000)
+dev.off()
+
+
+```
+
+
+```{r , fig.width=5.5, fig.height=5}
+
+fc_summary <- merge(liu_results[,c("ENTREZID", "Log2.median.foldchange")], 
+                    dge_results_prot[,c("selected_entrez_first", "logFC")], by.x="ENTREZID", by.y="selected_entrez_first")
+
+
+fc_summary <- merge(fc_summary, dge_results_rnaseq[,c("ENTREZID", "logFC")], 
+                    by.x="ENTREZID", by.y="ENTREZID")
+
+print(nrow(fc_summary))
+
+colnames(fc_summary) <- c("Gene"," \nProteomics\n(Liu et al.)"," \nProteomics\n(this study)",
+                          " \nRNA-Seq\n(this study)")
+
+
+chart.Correlation.linear(fc_summary[,c(2:4)], histogram = TRUE,
+                  method = "spearman")
+#title("Log2 FC(tumor vs ctrl) values for commonly quantified 5475 genes\n(Spearman corr.)\n ",
+#      font.main= 8,cex.main = 0.75, col.main="darkred")
+
+
+
+png(filename = "figs/ours_vs_Liu_log2fcs_tumor_vs_ctrl.png",
+    width = 4, height = 4, units = "in",res = 600)
+chart.Correlation.linear(fc_summary[,c(2:4)], histogram = TRUE,
+                  method = "spearman")
+#title("Log2 FC(tumor vs ctrl) values for commonly quantified 5475 genes\n(Spearman corr.)\n \n \n \n ",
+#      font.main= 8,cex.main = 0.75, col.main="darkred")
+dev.off()
+
+
+svg(filename = "figs/ours_vs_Liu_log2fcs_tumor_vs_ctrl.svg",
+    width = 4, height = 4)
+chart.Correlation.linear(fc_summary[,c(2:4)], histogram = TRUE,
+                  method = "spearman")
+#title("Log2 FC(tumor vs ctrl) values for commonly quantified 5475 genes\n(Spearman corr.)\n \n \n \n ",
+#      font.main= 8,cex.main = 0.75, col.main="darkred")
+dev.off()
+
+pdf(file = "figs/ours_vs_Liu_log2fcs_tumor_vs_ctrl.pdf",
+    width = 4, height = 4)
+chart.Correlation.linear(fc_summary[,c(2:4)], histogram = TRUE,
+                  method = "spearman")
+#title("Log2 FC(tumor vs ctrl) values for commonly quantified 5475 genes\n(Spearman corr.)\n \n \n \n ",
+#      font.main= 8,cex.main = 0.75, col.main="darkred")
+dev.off()
+
+
+```
+
+
+
+
+# GSEA
+
+```{r }
+
+rank_prot <- create_rank(dea_res = dge_results_prot,
+                       coef_col = "logFC",
+                       p_col = "P.Value",
+                       gene_col = "selected_entrez_first",
+                       use_p=TRUE)
+hist(rank_prot)
+
+rank_rna <- create_rank(dea_res = dge_results_rnaseq,
+                       coef_col = "logFC",
+                       p_col = "P.Value",
+                       gene_col = "selected_entrez", 
+                       use_p=TRUE)
+hist(rank_rna)
+
+
+rank_liu <- create_rank(dea_res = liu_results,
+                       coef_col = "Log2.median.foldchange",
+                       p_col = "P.value",
+                       gene_col = "ENTREZID",
+                       use_p=TRUE)
+hist(rank_liu)
+
+
+
+#genesets_for_gsea<- clusterProfiler::read.gmt("files/msigdb.v2024.1.Hs.symbols.gmt")
+#genesets_for_gsea <- genesets_for_gsea[grepl("HALLMARK_|KEGG_|REACTOME_",genesets_for_gsea$term),]
+
+
+
+ranks <- list(prot = rank_prot,
+              rna = rank_rna,
+              liu = rank_liu)
+
+```
+
+
+```{r }
+load("rdata/reactome_hierarchy.RData")
+
+run_pgsea_analysis = FALSE
+
+all_genes = unique(c(dge_results_prot$selected_entrez_first,
+                     dge_results_rnaseq$selected_entrez,
+                     liu_results$ENTREZID))
+
+if (run_pgsea_analysis){
+  
+  geneset_info_for_gsea = extract_kegg_reactome_genesets(all_genes)
+  
+  pgsea_res = run_pgsea(rank_list = ranks, 
+                        geneset_info_for_gsea = geneset_info_for_gsea)
+  
+  save(pgsea_res,geneset_info_for_gsea, file="rdata/tumorspec_pGSEA.RData")
+  
+} else {
+  load("rdata/tumorspec_pGSEA.RData")
+}
+
+GSEA_list = pgsea_res$GSEA_list
+GSEA_results_matrix = pgsea_res$GSEA_matrix
+
+GSEA_results_matrix$Description = paste(GSEA_results_matrix$Database,
+                                        GSEA_results_matrix$Description,
+                                        sep="- ")
+
+
+```
+
+
+```{r }
+all_pathways <- unique(GSEA_results_matrix$ID)
+
+GSEA_results_matrix_merged <- as.data.frame(matrix(nrow=length(all_pathways), ncol=20, data = ""))
+colnames(GSEA_results_matrix_merged) <- c("GeneSet",
+                                   "NES_proteomics" ,"NES_rnaseq","NES_liu" ,
+                                   "p_proteomics" ,"p_rnaseq","p_liu",
+                                   "padj_proteomics" ,"padj_rnaseq","padj_liu",
+                                   "signif_proteomics" ,"signif_rnaseq","signif_liu",
+                                   "core_enrichment_proteomics","core_enrichment_rnaseq","core_enrichment_liu",
+                                   "core_enrichment_proteomics_rnaseq_liu","core_enrichment_proteomics_rnaseq",
+                                   "core_enrichment_proteomics_liu","core_enrichment_rnaseq_liu")
+GSEA_results_matrix_merged$GeneSet <- all_pathways
+GSEA_results_matrix_merged$NES_proteomics <- 0
+GSEA_results_matrix_merged$NES_rnaseq <- 0
+GSEA_results_matrix_merged$NES_liu <- 0
+GSEA_results_matrix_merged$p_proteomics <- 1
+GSEA_results_matrix_merged$p_rnaseq <- 1
+GSEA_results_matrix_merged$p_liu <- 1
+GSEA_results_matrix_merged$padj_proteomics <- 1
+GSEA_results_matrix_merged$padj_rnaseq <- 1
+GSEA_results_matrix_merged$padj_liu <- 1
+GSEA_results_matrix_merged = merge(GSEA_results_matrix_merged, 
+                                   unique(GSEA_results_matrix[,c("ID","Description","category","subcategory")]),
+                                   by.x="GeneSet", by.y="ID",all.x=T)
+
+
+#i=1733
+for (i in 1:nrow(GSEA_results_matrix_merged)){
+  #print(i)
+  if (GSEA_results_matrix_merged$GeneSet[i] %in% GSEA_results_matrix[GSEA_results_matrix$Data=="prot","ID"]){
+    
+    GSEA_results_matrix_merged$NES_proteomics[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="prot" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"NES"]
+    GSEA_results_matrix_merged$p_proteomics[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="prot" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"pvalue"]
+    GSEA_results_matrix_merged$padj_proteomics[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="prot" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"p.adjust"]
+    
+    GSEA_results_matrix_merged$core_enrichment_proteomics[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="prot" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"core_enrichment_symbols"]
+    
+  }
+  
+  
+  if (GSEA_results_matrix_merged$GeneSet[i] %in% GSEA_results_matrix[GSEA_results_matrix$Data=="rna","ID"]){
+    
+    GSEA_results_matrix_merged$NES_rnaseq[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="rna" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"NES"]
+    GSEA_results_matrix_merged$p_rnaseq[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="rna" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"pvalue"]
+    GSEA_results_matrix_merged$padj_rnaseq[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="rna" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"p.adjust"]
+    
+    GSEA_results_matrix_merged$core_enrichment_rnaseq[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="rna" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"core_enrichment_symbols"]
+    
+  }
+  
+  
+  if (GSEA_results_matrix_merged$GeneSet[i] %in% GSEA_results_matrix[GSEA_results_matrix$Data=="liu","ID"]){
+    
+    GSEA_results_matrix_merged$NES_liu[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="liu" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"NES"]
+    GSEA_results_matrix_merged$p_liu[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="liu" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"pvalue"]
+    GSEA_results_matrix_merged$padj_liu[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="liu" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"p.adjust"]
+    
+    GSEA_results_matrix_merged$core_enrichment_liu[i] <- GSEA_results_matrix[GSEA_results_matrix$Data=="liu" &
+                                                                         GSEA_results_matrix$ID == GSEA_results_matrix_merged$GeneSet[i],"core_enrichment_symbols"]
+    
+  }
+  
+  
+  GSEA_results_matrix_merged$signif_proteomics[i] <- ifelse(GSEA_results_matrix_merged$padj_proteomics[i] < 0.05, "*", "")
+  GSEA_results_matrix_merged$signif_rnaseq[i] <- ifelse(GSEA_results_matrix_merged$padj_rnaseq[i] < 0.05, "*", "")
+  GSEA_results_matrix_merged$signif_liu[i] <- ifelse(GSEA_results_matrix_merged$padj_liu[i] < 0.05, "*", "")
+  
+  core_enrichment_proteomics <- strsplit(GSEA_results_matrix_merged$core_enrichment_proteomics[i], split="/", fixed = T)[[1]]
+  core_enrichment_rnaseq <- strsplit(GSEA_results_matrix_merged$core_enrichment_rnaseq[i], split="/", fixed = T)[[1]]
+  core_enrichment_liu <- strsplit(GSEA_results_matrix_merged$core_enrichment_liu[i], split="/", fixed = T)[[1]]
+  
+  
+  core_enrichment_proteomics_rnaseq <- intersect(core_enrichment_proteomics,core_enrichment_rnaseq)
+  core_enrichment_proteomics_liu <- intersect(core_enrichment_proteomics,core_enrichment_liu)
+  core_enrichment_rnaseq_liu <- intersect(core_enrichment_rnaseq,core_enrichment_liu)
+  
+  core_enrichment_proteomics_rnaseq_liu <- intersect(intersect(core_enrichment_proteomics,core_enrichment_rnaseq),core_enrichment_liu)
+  
+  
+  GSEA_results_matrix_merged$core_enrichment_proteomics_rnaseq_liu[i] <- paste(core_enrichment_proteomics_rnaseq_liu, collapse = "/")
+  GSEA_results_matrix_merged$core_enrichment_proteomics_rnaseq[i] <- paste(core_enrichment_proteomics_rnaseq, collapse = "/")
+  GSEA_results_matrix_merged$core_enrichment_proteomics_liu[i] <- paste(core_enrichment_proteomics_liu, collapse = "/")
+  GSEA_results_matrix_merged$core_enrichment_rnaseq_liu[i] <- paste(core_enrichment_rnaseq_liu, collapse = "/")
+
+}
+
+
+
+```
+
+
+```{r , fig.width=15, fig.height=15}
+gsea_significant_in_all <- GSEA_results_matrix_merged[GSEA_results_matrix_merged$signif_proteomics =="*"&
+                                                        GSEA_results_matrix_merged$signif_rnaseq=="*",]
+
+#Heatmap(gsea_significant_in_all[,c("NES_proteomics", "NES_rnaseq", "NES_liu")],
+#        row_labels = gsea_significant_in_all$GeneSet)
+# all are supported by Liu except for protein localization
+
+
+```
+
+```{r , fig.width=15, fig.height=25}
+
+gsea_significant_proteomics <- GSEA_results_matrix_merged[GSEA_results_matrix_merged$signif_proteomics =="*",]
+
+#Heatmap(gsea_significant_proteomics[,c("NES_proteomics", "NES_rnaseq", "NES_liu")],
+#        row_labels = gsea_significant_proteomics$GeneSet)
+# all are supported by Liu except for protein localization
+
+
+nrow(GSEA_results_matrix_merged[GSEA_results_matrix_merged$padj_proteomics < 0.05,])
+
+```
+
+
+
+
+```{r , fig.width=7.5, fig.height=4.5}
+
+gsea_significant_proteomics$label <- gsub("KEGG- |Reactome- ","",gsea_significant_proteomics$Description)
+gsea_significant_proteomics$label = ifelse(gsea_significant_proteomics$Description %in% 
+                                             c("Reactome- mRNA Splicing", 
+                                               "Reactome- Interferon Signaling", 
+                                               "Reactome- DNA Repair",
+                                               "Reactome- Metabolism of non-coding RNA", 
+                                               "KEGG- Cell cycle", 
+                                               "Reactome- Fatty acid metabolism", "KEGG- Peroxisome", 
+                                               "KEGG- Valine, leucine and isoleucine degradation",
+                                               "KEGG- Oxidative phosphorylation", "KEGG- Lysosome",
+                                               "KEGG- Citrate cycle (TCA cycle)", 
+                                               "Reactome- Gluconeogenesis", "Protein folding"),
+                                           gsea_significant_proteomics$label, "")
+
+
+ggplot(gsea_significant_proteomics, aes(x=NES_proteomics, y=NES_liu, color=NES_rnaseq, label=label))+geom_point()+xlim(-3.2,3.2)+ylim(-3.2,3.2)+
+  geom_hline(yintercept = 0, linetype ="dashed", color="gray")+geom_vline(xintercept = 0, linetype ="dashed", color="gray")+
+  scale_color_gradient2(low=colorlist$correlation["negative"], 
+                        mid = colorlist$correlation["not highlighted"],
+                        high = colorlist$correlation["positive"],
+                        limits = c(-3,3))+theme_classic()+geom_label_repel(max.overlaps = Inf)+
+  xlab("Normalized Enrichment Score\nProteomics - This study")+
+  ylab("Normalized Enrichment Score\nProteomics - Liu et al., 2024")+
+  ggtitle("Tumor vs Ctrl - GSEA results")+labs(color="Normalized Enrichment Score\nRNA-Seq - This study")
+
+
+ggsave("figs/tumor_vs_ctrl_gsea.png")
+ggsave("figs/tumor_vs_ctrl_gsea.svg")
+ggsave("figs/tumor_vs_ctrl_gsea.pdf")
+
+```
+
+
+
+
+```{r , fig.width=7, fig.height=3}
+
+
+dge_results_prot$`Tumor vs ctrl. DEA` <- ifelse(dge_results_prot$adj.P.Val < 0.05 & 
+                                              !is.na(dge_results_prot$adj.P.Val) &
+                               dge_results_prot$logFC > 0, "UP in tumors (adj.p<0.05)", "not significant (adj.p≥0.05)")
+dge_results_prot$`Tumor vs ctrl. DEA` <- ifelse(dge_results_prot$adj.P.Val < 0.05 & 
+                                              !is.na(dge_results_prot$adj.P.Val) &
+                               dge_results_prot$logFC < 0, "DN in tumors (adj.p<0.05)", dge_results_prot$`Tumor vs ctrl. DEA`)
+
+dge_results_prot$label <- ifelse(dge_results_prot$`Tumor vs ctrl. DEA`=="ns","",
+                                           dge_results_prot$gene_names)
+
+summary(factor(dge_results_prot$`Tumor vs ctrl. DEA`))
+
+dge_results_rnaseq$`Tumor vs ctrl. DEA` <- ifelse(dge_results_rnaseq$adj.P.Val < 0.05 & 
+                                              !is.na(dge_results_rnaseq$adj.P.Val) &
+                               dge_results_rnaseq$logFC > 0, "UP in tumors (adj.p<0.05)", "not significant (adj.p≥0.05)")
+dge_results_rnaseq$`Tumor vs ctrl. DEA` <- ifelse(dge_results_rnaseq$adj.P.Val < 0.05 & 
+                                              !is.na(dge_results_rnaseq$adj.P.Val) &
+                               dge_results_rnaseq$logFC < 0, "DN in tumors (adj.p<0.05)", dge_results_rnaseq$`Tumor vs ctrl. DEA`)
+
+dge_results_rnaseq$label <- ifelse(dge_results_rnaseq$`Tumor vs ctrl. DEA`=="ns","",
+                                           dge_results_rnaseq$hgnc_symbol)
+
+summary(factor(dge_results_rnaseq$`Tumor vs ctrl. DEA`))
+
+
+
+v1 <- ggplot(data=dge_results_prot, aes(x=logFC, y=-log10(P.Value), col=`Tumor vs ctrl. DEA`, label=label)) + 
+    geom_point() + 
+  #geom_label_repel(max.overlaps = 30, seed=1234, aes(label = label,fontface = 'bold')) + 
+  xlim(-8.3,8.3)+
+  scale_color_manual(values=c(as.character(colorlist[["correlation"]][["negative"]]),
+                              as.character(colorlist[["correlation"]][["not highlighted"]]),
+                              as.character(colorlist[["correlation"]][["positive"]])))+
+  xlab("log2FC(tumor vs ctrl)")+ylab("-log10(p-value)")+theme_classic()
+v1
+
+v2 <- ggplot(data=dge_results_rnaseq, aes(x=logFC, y=-log10(P.Value), col=`Tumor vs ctrl. DEA`, label=label)) + 
+    geom_point() + 
+  #geom_label_repel(max.overlaps = 30, seed=1234, aes(label = label,fontface = 'bold')) + 
+  xlim(-8.3,8.3)+
+  scale_color_manual(values=c(as.character(colorlist[["correlation"]][["negative"]]),
+                              as.character(colorlist[["correlation"]][["not highlighted"]]),
+                              as.character(colorlist[["correlation"]][["positive"]])))+
+  xlab("log2FC(tumor vs ctrl)")+ylab("-log10(p-value)")+theme_classic()
+
+
+ggarrange(v2+ylim(0,55)+
+            annotate("text", x=-4.5, y=45, label= "4013 transcripts\nDN in tumors",color="darkgray")+
+            annotate("text", x=5, y=45, label= "4415 transcripts\nUP in tumors",color="darkgray")+ggtitle("RNA-Seq"), 
+          
+          v1+ylim(0,55)+
+            annotate("text", x=-5, y=45, label= "1071 proteins\nDN in tumors",color="darkgray")+
+            annotate("text", x= 6, y=45, label= "3877 proteins\nUP in tumors",color="darkgray")+ggtitle("Proteomics"), 
+          common.legend =TRUE,
+          align="hv")
+
+ggsave("figs/tumor_vs_ctrl_volcano.png")
+ggsave("figs/tumor_vs_ctrl_volcano.svg")
+ggsave("figs/tumor_vs_ctrl_volcano.pdf")
+
+
+```
+
+
+# Export results
+
+
+```{r }
+
+dge_results_rnaseq$hgnc_symbol_from_internal_mapping = dge_results_rnaseq$SYMBOL
+dge_results_rnaseq$original_hgnc_symbol = dge_results_rnaseq$hgnc_symbol
+dge_results_rnaseq$ENTREZID_selected_for_pathway_analysis = dge_results_rnaseq$selected_entrez
+
+rnaseq_dea_results <- dge_results_rnaseq[,c("hgnc_symbol", "ensembl_gene_id", 
+                                            "logFC","P.Value",
+                                            "adj.P.Val", "AveExpr","t", "B", "ENTREZID",
+                                            "ENTREZID_selected_for_pathway_analysis", 
+                                            #"hgnc_symbol_from_internal_mapping", 
+                                            "Tumor vs ctrl. DEA")]
+colnames(rnaseq_dea_results)[3] <- "log2FC_tumor_vs_ctrl"
+
+dge_results_prot$protein_group = dge_results_prot$Row.names
+dge_results_prot$ENTREZID_selected_for_pathway_analysis = dge_results_prot$selected_entrez_first
+
+
+proteomics_dea_results <- dge_results_prot[,c("gene_names", "protein_group", 
+                                            "logFC","P.Value",
+                                            "adj.P.Val", "AveExpr","t", "B",
+                                            "ENTREZID_selected_for_pathway_analysis", 
+                                            #"hgnc_symbol_from_internal_mapping", 
+                                            "Tumor vs ctrl. DEA")]
+colnames(proteomics_dea_results)[3] <- "log2FC_tumor_vs_ctrl"
+
+
+gsea_results_all <- GSEA_results_matrix
+
+```
+
+
+```{r }
+
+protein_list <- as.data.frame(read.xlsx("files/SCLC_RRA protein list_KB_MP_BS.xlsx"))
+protein_list <- na.omit(unique(unlist(strsplit(protein_list$final_name, split=","))))
+protein_list = unlist(lapply(protein_list, trimws))
+protein_list
+#protein_list[order(prNULL#protein_list[order(protein_list)]
+protein_list[grepl("KDM1A",protein_list)] = "KDM1A"
+
+```
+
+```{r }
+protein_list[!protein_list%in%protein_annotation$gene_names]
+
+sapply(protein_list[!protein_list%in%protein_annotation$gene_names],
+       function(x){any(grepl(x,protein_annotation$gene_names))})
+# none of these are detectable in our proteomic data
+
+```
+
+
+
+
+
+
+
+```{r }
+
+proteomics_significant <- proteomics_dea_results[proteomics_dea_results$adj.P.Val < 0.05,
+                                                 c("gene_names", "protein_group", "log2FC_tumor_vs_ctrl", 
+                                                   "P.Value", "adj.P.Val", "AveExpr", "ENTREZID_selected_for_pathway_analysis")]
+
+proteomics_significant$wishlist <- ifelse(proteomics_significant$gene_names %in% protein_list,
+                                          "*","")
+
+
+proteomics_significant$rnaseq_top_signif <- NA
+proteomics_significant$rnaseq_p_signif <- NA
+proteomics_significant$rnaseq_fdr_signif <- NA
+proteomics_significant$rnaseq_log2fc_match <- NA
+proteomics_significant$rnaseq_log2fc <- NA
+proteomics_significant$rnaseq_p <- NA
+proteomics_significant$rnaseq_fdr <- NA
+proteomics_significant$rnaseq_matching_transcripts <- NA
+
+
+proteomics_significant$liu_log2fc_match <- NA
+proteomics_significant$liu_p_signif <- NA
+proteomics_significant$liu_fdr_signif <- NA
+proteomics_significant$liu_sclc_associated <- NA
+
+proteomics_significant$liu_log2fc <- NA
+proteomics_significant$liu_p <- NA
+proteomics_significant$liu_fdr <- NA
+
+
+
+i=2
+for (i in 1:nrow(proteomics_significant)){
+  
+  if (proteomics_significant$ENTREZID_selected_for_pathway_analysis[i]==""){
+    next
+  }
+  
+  rnaseq_res <- rnaseq_dea_results[rnaseq_dea_results$ENTREZID_selected_for_pathway_analysis == proteomics_significant$ENTREZID_selected_for_pathway_analysis[i] &
+                                            !is.na(rnaseq_dea_results$ENTREZID_selected_for_pathway_analysis),]
+  
+  if (nrow(rnaseq_res)==0){
+    next
+  }
+  
+  rnaseq_res <- rnaseq_res[order(rnaseq_res$P.Value),]
+  
+  proteomics_significant$rnaseq_matching_transcripts[i] <- paste(rnaseq_res$ENTREZID_selected_for_pathway_analysis, collapse = ",")
+  proteomics_significant$rnaseq_top_signif[i] <- rnaseq_res$ENTREZID_selected_for_pathway_analysis[1]
+  proteomics_significant$rnaseq_log2fc[i] <- rnaseq_res$log2FC_tumor_vs_ctrl[1]
+  proteomics_significant$rnaseq_p[i] <- rnaseq_res$P.Value[1]
+  proteomics_significant$rnaseq_fdr[i] <- rnaseq_res$adj.P.Val[1]
+  
+  log2fc_dir <- ifelse(proteomics_significant$log2FC_tumor_vs_ctrl[i]<0,"neg","pos")
+  
+  proteomics_significant$rnaseq_log2fc_match[i] <- ifelse((rnaseq_res$log2FC_tumor_vs_ctrl[1]<0 &
+                                                            log2fc_dir=="neg")|
+                                                            rnaseq_res$log2FC_tumor_vs_ctrl[1]>0 &
+                                                            log2fc_dir=="pos","*","")
+  proteomics_significant$rnaseq_p_signif[i] <- ifelse(rnaseq_res$P.Value[1]<0.05,"*","")
+  proteomics_significant$rnaseq_fdr_signif[i] <- ifelse(rnaseq_res$adj.P.Val[1]<0.05,"*","")
+  
+  
+  liu_res <- liu_results[liu_results$ENTREZID == proteomics_significant$ENTREZID_selected_for_pathway_analysis[i],]
+  proteomics_significant$liu_log2fc[i] <- liu_res$Log2.median.foldchange[1]
+  proteomics_significant$liu_p[i] <- liu_res$P.value[1]
+  proteomics_significant$liu_fdr[i] <- liu_res$FDR[1]
+  
+  
+  proteomics_significant$liu_log2fc_match[i] <- ifelse((liu_res$Log2.median.foldchange[1]<0 &
+                                                            log2fc_dir=="neg")|
+                                                            liu_res$Log2.median.foldchange[1]>0 &
+                                                            log2fc_dir=="pos","*","")
+  proteomics_significant$liu_p_signif[i] <- ifelse(liu_res$P.value[1]<0.05,"*","")
+  proteomics_significant$liu_fdr_signif[i] <- ifelse(liu_res$FDR[1]<0.05,"*","")
+  proteomics_significant$liu_sclc_associated[i] <- ifelse(is.na(liu_res$SCLC.associated.proteins[1]),"","*")
+  
+  
+}
+
+
+nrow(proteomics_significant)
+nrow(proteomics_significant[abs(proteomics_significant$log2FC_tumor_vs_ctrl) > log2(1.5),])
+nrow(proteomics_significant[proteomics_significant$log2FC_tumor_vs_ctrl > log2(1.5),])
+nrow(proteomics_significant[proteomics_significant$log2FC_tumor_vs_ctrl > 0,])
+
+
+
+
+proteinatlas <- read.delim("files/proteinatlas.tsv")
+
+colnames(proteinatlas) <- paste("HPA",colnames(proteinatlas),sep="_")
+
+proteinatlas$first_gene <- proteinatlas$HPA_Gene
+
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q8NB90", "AFG2A", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q8WUF8", "ARB2A", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="P0DPI2", "GATD3B", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="P30711", "GSTT1", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="P79483", "HLA-DRB3", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q9Y547", "IFT25", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="P82909", "KGD4", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q5TF21", "MTCL3", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="O14745", "NHERF1", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q15599", "NHERF2", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q5T6V5", "QNG1", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="O00193", "SMAP", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$HPA_Uniprot=="Q9H8H3", "TMT1A", proteinatlas$first_gene)
+
+proteinatlas$first_gene <- ifelse(proteinatlas$first_gene=="MT-ATP8", "ATP8", proteinatlas$first_gene)
+#proteinatlas$first_gene <- ifelse(proteinatlas$first_gene=="IVNS1ABP", "ND1", proteinatlas$first_gene) # both are detectable
+proteinatlas$first_gene <- ifelse(proteinatlas$first_gene=="MT-ND5", "ND5", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(proteinatlas$first_gene=="MT-ND2", "ND2", proteinatlas$first_gene)
+proteinatlas$first_gene <- ifelse(grepl("C11orf58",proteinatlas$HPA_Gene), "C11orf58", proteinatlas$first_gene)
+
+
+proteomics_significant$first_gene = proteomics_significant$gene_names
+proteomics_significant$first_gene = sapply(proteomics_significant$first_gene,
+                                           function(x){
+                                             if (grepl(",",x)){
+                                               return(strsplit(x,split=",")[[1]][1])
+                                             } else {
+                                               return(x)
+                                             }
+                                           })
+proteomics_significant <- merge(proteomics_significant, proteinatlas, by="first_gene", all.x=T)
+
+proteomics_significant[is.na(proteomics_significant$HPA_Evidence),"first_gene"]
+
+sapply(proteomics_significant[is.na(proteomics_significant$HPA_Gene),"first_gene"],
+       function(x){
+         if (any(grepl(x,proteinatlas$HPA_Gene.synonym))){
+           print(x)
+         } else {
+           print("")
+         }
+       })
+
+sapply(proteomics_significant[is.na(proteomics_significant$HPA_Gene),"first_gene"],
+       function(x){
+         if (any(grepl(x,proteinatlas$HPA_Gene))){
+           print(x)
+         } else {
+           print("")
+         }
+       })
+
+
+save(proteomics_significant,
+     file="rdata/tumor_DEA_proteins.RData")
+
+```
+
+
+
+
+```{r }
+deg_transcripts <- rnaseq_dea_results[rnaseq_dea_results$adj.P.Val < 0.05,"ensembl_gene_id"]
+
+
+```
+
+
+
+```{r , fig.width=15, fig.height=15}
+
+histology = proteomic_samples[,c("tumor","stroma","necrosis","normal")]
+histology[is.na(histology)] <- 0
+
+topannot <- HeatmapAnnotation(
+                             
+                              "Hist." = anno_barplot(histology[,],
+                                                     gp = gpar(fill =  colorlist$histology[c("tumor", "stroma", 
+                                                                                             "necrosis", "normal")],
+                                                               #lty="blank",
+                                                               lwd = 0.5,
+                                                               col = "lightgray"),
+                                                     border=TRUE,
+                                                     height = unit(1.5, "cm"),
+                                                     axis_param = list(
+                                                       side = "left",
+                                                       at = c(0.25,0.50,0.75), 
+                                                       labels = c("25%","50%", "75%") )),
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+ht = draw(Heatmap(t(scale(t(both_batchcorr[proteomics_significant[proteomics_significant$wishlist =="*","protein_group"],proteomic_samples$replicate_id]))),
+        cluster_rows = TRUE, cluster_columns = TRUE,
+        cluster_column_slices = FALSE,
+        col = colorlist$`z-score`,
+        show_row_names = TRUE,
+        row_split = ifelse(proteomics_significant[proteomics_significant$wishlist =="*","protein_group"] %in%
+                             proteomics_significant[proteomics_significant$log2FC_tumor_vs_ctrl<0,"protein_group"],
+                           "DN in tumors", "UP in tumors"),
+        name="Z-scored\nprotein LFQ",
+        #left_annotation =  left_ha,
+        top_annotation = topannot,
+        row_names_side = "right",
+        show_row_dend = TRUE,
+        row_labels = proteomics_significant[proteomics_significant$wishlist =="*","gene_names"],
+        show_column_names = FALSE,
+         row_names_gp = gpar(fontsize = 10),
+        column_split = ifelse(grepl("ctrl",proteomic_samples$replicate_id),"ctrl","tumor")),
+     annotation_legend_side="left", heatmap_legend_side="left")
+
+
+export_heatmap_png(filename = "figs/wishlist_proteins_tumor_vs_ctrl", 
+                   width = 15, height=15, ht_object=ht)
+
+```
+
+
+
+
+
+# Export results
+
+
+```{r }
+
+proteomics_dea_results_export = proteomics_dea_results[proteomics_dea_results$adj.P.Val<0.05 &
+                                                         !is.na(proteomics_dea_results$adj.P.Val),
+                                                       c("protein_group",
+                                                         "log2FC_tumor_vs_ctrl",
+                                                         "P.Value",
+                                                         "adj.P.Val",
+                                                         "ENTREZID_selected_for_pathway_analysis",
+                                                         "gene_names")]
+
+
+colnames(proteomics_dea_results_export) = c("Protein group", "log2FC (tumor vs ctrl)",
+                             "P-value","Adjusted p-value", "ENTREZ ID", "Gene symbol")
+
+
+
+rnaseq_dea_results_export = rnaseq_dea_results[rnaseq_dea_results$adj.P.Val<0.05 &
+                                                         !is.na(rnaseq_dea_results$adj.P.Val),
+                                                       c("ensembl_gene_id",
+                                                         "log2FC_tumor_vs_ctrl",
+                                                         "P.Value",
+                                                         "adj.P.Val",
+                                                         "ENTREZID_selected_for_pathway_analysis",
+                                                         "hgnc_symbol")]
+
+
+colnames(rnaseq_dea_results_export) = c("ENSEMBL gene ID", "log2FC (tumor vs ctrl)",
+                             "P-value","Adjusted p-value", "ENTREZ ID", "Gene symbol")
+
+gsea_results_all_export = gsea_results_all[gsea_results_all$Data %in% c("prot","rna") &
+                                              gsea_results_all$p.adjust<0.05,c("Data","Description",
+                                                                    "NES", "pvalue","p.adjust",
+                                                                    "ID",
+                                                                    "core_enrichment_symbols")]
+colnames(gsea_results_all_export) = c("Dataset","Geneset", "Normalized enrichment score (NES)",
+                             "P-value","Adjusted p-value", "Geneset ID", "Core enrichment")
+gsea_results_all_export$Dataset = ifelse(gsea_results_all_export$Dataset =="prot","Proteomics", "RNA-Seq")
+
+
+wb <- createWorkbook()
+
+addWorksheet(wb, sheet = "DEA results - proteomics", gridLines = TRUE)
+writeData(wb, "DEA results - proteomics", proteomics_dea_results_export)
+addWorksheet(wb, sheet = "DEA results - RNAseq", gridLines = TRUE)
+writeData(wb, "DEA results - RNAseq", rnaseq_dea_results_export)
+addWorksheet(wb, sheet = "GSEA results", gridLines = TRUE)
+writeData(wb, "GSEA results", gsea_results_all_export)
+
+saveWorkbook(wb, file = "supplementary_tables/Table S5 - Tumor vs ctrl multiomic comparison.xlsx", overwrite = TRUE)
+
+```
+
+
+
+
+
+
+```{r }
+
+```
+

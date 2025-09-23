@@ -1,0 +1,486 @@
+---
+title: "Search for stably expressed proteins"
+author: "Bea Szeitz"
+---
+
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+```{r}
+
+load("rdata/histology_linregr.RData")
+load("rdata/tumor_vs_ctrl_results.RData")
+
+
+```
+
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+load("rdata/gene_protein_annotations.RData")
+protein_annotation = protein_annotation_nonredundant
+colnames(protein_annotation)[1] = "protein_group"
+
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+
+
+proteomic_samples <- sample_annot_withrepl[!is.na(sample_annot_withrepl$proteomics),
+                                           ]
+row.names(proteomic_samples) <- proteomic_samples$replicate_id
+
+tumor_samples = proteomic_samples[!grepl("ctrl",row.names(proteomic_samples))&
+                                    !is.na(proteomic_samples$proteomics),]
+
+
+both_batchcorr = both_batchcorr[,proteomic_samples$replicate_id]
+
+```
+
+
+```{r }
+adjtissue_contents = na.omit(setNames(tumor_samples$normal,
+                                                          tumor_samples$replicate_id))
+
+filt_vv = filter_missingvalues(both_batchcorr[,names(adjtissue_contents)],90)
+
+
+ggobj = melt(as.matrix(both_batchcorr[row.names(filt_vv),]))
+colnames(ggobj) = c("protein_group", "replicate_id", "lfq")
+
+ggobj = merge(ggobj, protein_annotation, by="protein_group")
+ggobj = merge(ggobj, sample_annot_withrepl, by="replicate_id")
+
+ggobj$sample_type = ifelse(ggobj$type=="ctrl","ctrl","tumor")
+
+patients_with_ctrls <- ggobj %>%
+  distinct(patient, sample_type) %>%
+  group_by(patient) %>%
+  summarise(n_types = n_distinct(sample_type), .groups = "drop") %>%
+  filter(n_types == 2) %>%
+  pull(patient)
+
+x=row.names(filt_vv)[1]
+
+rerun_fc_calc = FALSE
+
+if (rerun_fc_calc){
+  median_fcs = do.call(rbind,lapply(row.names(filt_vv), function(x){
+    res = ggobj[ggobj$patient %in% patients_with_ctrls &
+                  ggobj$protein_group ==x,] %>%
+      group_by(patient, sample_type) %>%
+      summarise(mean_expr = mean(lfq, na.rm = TRUE), .groups = "drop") %>%
+      pivot_wider(names_from = sample_type, values_from = mean_expr) %>%
+      mutate(log2FC = tumor - ctrl)
+    
+    res2= data.frame(protein_group = x,
+                     lowest_log2FC = min(res$log2FC,na.rm=T),
+                     median_log2FC = median(res$log2FC,na.rm=T))
+    
+    return(res2)
+    #return(median(res$log2FC, na.rm = TRUE))
+  }))
+  #names(median_fcs) = row.names(filt_vv)
+  
+  
+  
+  save(median_fcs, file = "rdata/median_FCs.RData")
+} else {
+  load("rdata/median_FCs.RData")
+}
+
+
+
+hist(median_fcs$median_log2FC )
+
+
+#up_in_tumors = intersect(dge_results_prot[dge_results_prot$logFC>log2(2)&
+#                                  dge_results_prot$adj.P.Val<0.05,"Row.names"],
+#                         row.names(filt_vv))
+#up_in_tumors = intersect(median_fcs[median_fcs$median_log2FC >log2(1.5) &
+#                            median_fcs$lowest_log2FC > log2(1),"protein_group"],
+#                         dge_results_prot[dge_results_prot$logFC>log2(1.5)&
+#                                  dge_results_prot$adj.P.Val<0.05,"Row.names"])
+up_in_tumors = median_fcs[median_fcs$median_log2FC >log2(1.5) &
+                            median_fcs$lowest_log2FC > log2(1),"protein_group"]
+
+tumor_expr_90vv_normalcorr = histology_correction(filt_vv[up_in_tumors,],
+                                                 adjtissue_contents)
+```
+
+
+
+```{r }
+
+patients_min_2_samples = tumor_samples[tumor_samples$replicate_id %in% colnames(both_batchcorr),]
+patients_min_2_samples = unique(patients_min_2_samples[duplicated(patients_min_2_samples$patient),"patient"])
+
+tumor_spec_mad = calculate_pooled_mad(expr_tab = tumor_expr_90vv_normalcorr,
+                     patient_vector = patients_min_2_samples,
+                     sample_patient_match = tumor_samples[,c("replicate_id","patient")])
+
+```
+
+
+
+
+
+```{r }
+quantile(tumor_spec_mad$pooled_mad)
+hist(tumor_spec_mad$pooled_mad)
+
+```
+
+```{r }
+
+
+stable_expr = tumor_spec_mad[tumor_spec_mad$pooled_mad<0.2623175,"Row.names"]
+
+loaded = load("rdata/tumor_DEA_proteins.RData")
+loaded
+
+#proteomics significant = DE res
+stable_expr[!stable_expr %in% proteomics_significant$protein_group]
+
+manually_selected = c("POLR3C", "TRMT6", "ARID1B", "TDP2", "BMI1", "MLH1", "METTL3", "OGA", "KDM2A", "CDK7", "ANAPC1", "CTPS2", "BRD4")
+manually_selected_proteinname = protein_annotation_nonredundant[protein_annotation_nonredundant$gene_names %in% manually_selected,"protein_group_ordered"]
+
+
+stable_expr_and_druggable = proteomics_significant[ (proteomics_significant$protein_group %in% stable_expr &
+                                                     grepl("drug",proteomics_significant$HPA_Protein.class)) |
+                                                     proteomics_significant$protein_group %in%  manually_selected_proteinname,]
+
+stable_expr_with_HPA = proteomics_significant[proteomics_significant$protein_group %in% stable_expr ,]
+
+```
+
+
+```{r , fig.width=25, fig.height=35}
+
+Heatmap(t(scale(t(tumor_expr_90vv_normalcorr[stable_expr,]))),
+        column_split = sapply(strsplit(colnames(tumor_expr_90vv_normalcorr),
+                                       split="_"),"[[",1),
+        cluster_columns = FALSE)
+
+
+
+Heatmap(t(scale(t(both_batchcorr[stable_expr,tumor_samples$replicate_id]))),
+        column_split = tumor_samples$patient,
+        cluster_columns = FALSE)
+
+
+samples_to_use = sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),]
+
+
+Heatmap(t(scale(t(both_batchcorr[stable_expr,samples_to_use$replicate_id]))),
+        column_split = samples_to_use$patient,
+        cluster_columns = FALSE,
+        row_labels = protein_annotation[stable_expr,"gene_names"],
+        top_annotation = HeatmapAnnotation(type = samples_to_use$type,
+                                           col=colorlist))
+
+
+
+```
+
+
+```{r , fig.width=18, fig.height=20}
+ggobj = melt(as.matrix(both_batchcorr[stable_expr,]))
+colnames(ggobj) = c("protein_group", "replicate_id", "lfq")
+
+ggobj = merge(ggobj, protein_annotation, by="protein_group")
+ggobj = merge(ggobj, sample_annot_withrepl, by="replicate_id")
+
+ggobj$type_patient = paste(ggobj$patient,
+                           ggobj$type,sep="")
+
+ggobj$type = factor(ggobj$type,levels=c("ctrl","prim","met"))
+
+ggplot(ggobj[ggobj$protein_group %in% stable_expr_and_druggable$protein_group,], aes(x=type,y=lfq))+
+  geom_boxplot(aes(color=type),alpha=1)+geom_beeswarm(aes(fill=normal),pch=21,color="black")+
+  scale_color_manual(values=colorlist$type)+
+  scale_fill_gradientn(colors=attr(colorlist$normal,"colors"),
+                        values = as.numeric(attr(colorlist$normal,"breaks")))+
+  facet_grid(rows= vars(gene_names),
+             cols = vars(patient),
+             scales="free_y")+theme_bw()+ scale_x_discrete(labels= c("C","P","M"))
+
+ggsave("figs/stable_proteins_targetable_boxplot.png")
+ggsave("figs/stable_proteins_targetable_boxplot.pdf")
+ggsave("figs/stable_proteins_targetable_boxplot.svg")
+
+```
+
+
+
+```{r , fig.width=10, fig.height=8}
+samples_to_use = sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),]
+
+
+ht = Heatmap(t(scale(t(both_batchcorr[stable_expr,]))),
+        column_split = samples_to_use$patient,
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        show_row_dend = FALSE,
+        height = unit(12,"cm"),
+        col = colorlist$`z-score`,
+        #name = "Z-scored\nprotein LFQ\ncorrected for\ndifferences in\nadj.tissue-content",
+        name = "Z-scored\nprotein LFQ",
+        column_title = "Stably expressed proteins (weighted avr. MAD < 0.262)\n(only potentially targetable proteins are labeled)",
+        right_annotation = rowAnnotation(foo = anno_mark(at = sapply(stable_expr_and_druggable$protein_group,
+                                                                     function(x){grep(x,stable_expr)}), 
+                                      labels = stable_expr_and_druggable$first_gene)),
+        #row_labels = protein_annotation[stable_expr,"gene_names"],
+        top_annotation = HeatmapAnnotation(
+                                          patient = samples_to_use$patient,
+                                          type = samples_to_use$type,
+                                           col=colorlist))
+
+
+draw(ht)
+
+export_heatmap_png(filename = "figs/stable_proteins_heatmap_targetable", 
+                   width = 10, height=8, ht_object=ht)
+
+```
+
+
+```{r , fig.width=10, fig.height=8}
+samples_to_use = sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),]
+
+
+ht = Heatmap(t(scale(t(both_batchcorr[stable_expr,]))),
+        column_split = ifelse(samples_to_use$type=="ctrl","control tissue","tumor tissue"),
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        show_row_dend = FALSE,
+        cluster_columns = FALSE,
+        cluster_column_slices = FALSE,
+        height = unit(12,"cm"),
+        col = colorlist$`z-score`,
+        #name = "Z-scored\nprotein LFQ\ncorrected for\ndifferences in\nadj.tissue-content",
+        name = "Z-scored\nprotein LFQ",
+        column_title = "Stably expressed proteins (weighted avr. MAD < 0.262)\n(only potentially targetable proteins are labeled)",
+        right_annotation = rowAnnotation(foo = anno_mark(at = sapply(stable_expr_and_druggable$protein_group,
+                                                                     function(x){grep(x,stable_expr)}), 
+                                      labels = stable_expr_and_druggable$first_gene)),
+        #row_labels = protein_annotation[stable_expr,"gene_names"],
+        top_annotation = HeatmapAnnotation(
+                                          patient = samples_to_use$patient,
+                                          type = samples_to_use$type,
+                                           col=colorlist))
+
+
+draw(ht)
+
+
+```
+
+
+
+
+```{r , fig.width=10, fig.height=20}
+samples_to_use = sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% colnames(both_batchcorr),]
+
+ht = Heatmap(t(scale(t(both_batchcorr[stable_expr,]))),
+        column_split = samples_to_use$patient,
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        show_row_dend = FALSE,
+        height = unit(45,"cm"),
+        col = colorlist$`z-score`,
+        #name = "Z-scored\nprotein LFQ\ncorrected for\ndifferences in\nadj.tissue-content",
+        name = "Z-scored\nprotein LFQ",
+        column_title = "Stably expressed proteins (weighted avr. MAD < 0.262)",
+        #right_annotation = rowAnnotation(foo = anno_mark(at = sapply(stable_expr_and_druggable$protein_group,
+        #                                                             function(x){grep(x,stable_expr)}), 
+        #                              labels = stable_expr_and_druggable$first_gene)),
+        row_labels = protein_annotation[stable_expr,"gene_names"],
+        top_annotation = HeatmapAnnotation(
+                                          patient = samples_to_use$patient,
+                                          type = samples_to_use$type,
+                                           col=colorlist))
+
+draw(ht)
+
+export_heatmap_png(filename = "figs/stable_proteins_heatmap_all", 
+                   width = 10, height=20, ht_object=ht)
+
+
+```
+
+
+```{r }
+
+stable_expr_entrez <- unique(protein_annotation[stable_expr,"selected_entrez_first"])
+universe_entrez <- unique(protein_annotation[row.names(tumor_expr_90vv_normalcorr),"selected_entrez_first"])
+
+
+rerun_ora <- FALSE
+
+if (rerun_ora){
+  stable_ora = kegg_and_reactome_ora(stable_expr_entrez, universe_entrez)
+
+  all_genesets = kegg_and_reactome_ora(universe_entrez,
+                                       universe_entrez)
+  
+  save(stable_ora,
+       all_genesets,
+       file="rdata/stable_expr_ora.RData")
+} else {
+  load("rdata/stable_expr_ora.RData")
+}
+
+```
+
+
+```{r , fig.width=7, fig.height=5}
+
+ora_summary = rbind(stable_ora@result[1:30,])
+
+ora_summary$Description = factor(ora_summary$Description,levels = rev(ora_summary$Description))
+
+ggplot(ora_summary, aes(x=Description,y=-log10(pvalue), fill=Count))+
+  geom_bar(stat="identity")+coord_flip()+theme_classic() +xlab("")+
+  scale_fill_gradient2(low = "gold",high = "#003a7d",mid="lightblue",midpoint = 30) # blue-orange "#003a7d","#ff9d3a"
+
+
+
+```
+
+```{r , fig.width=15, fig.height=20}
+
+stable_ora_signif =stable_ora
+stable_ora_signif@result = stable_ora_signif@result[stable_ora_signif@result$p.adjust<0.05,]
+
+xx <- pairwise_termsim(stable_ora_signif)                     
+#emapplot(xx)
+
+edoxx = setReadable(xx, 'org.Hs.eg.db', 'ENTREZID')
+
+cnetplot(edoxx, node_label="all",
+         showCategory=50,
+         color_category = "darkred",
+         color_item = "gold",
+        cex_label_category = 1.2) 
+
+
+ggsave(file="figs/stably_expressed_proteins_ORA.png")
+ggsave(file="figs/stably_expressed_proteins_ORA.svg")
+ggsave(file="figs/stably_expressed_proteins_ORA.pdf")
+
+```
+
+
+```{r , fig.width=8, fig.height=5}
+
+stable_ora_lot_of_elements =stable_ora
+stable_ora_lot_of_elements@result = stable_ora_lot_of_elements@result[stable_ora_lot_of_elements@result$Count>10,]
+nrow(stable_ora_lot_of_elements@result)
+
+xx <- pairwise_termsim(stable_ora_lot_of_elements)                     
+#emapplot(xx)
+
+edoxx = setReadable(xx, 'org.Hs.eg.db', 'ENTREZID')
+
+cnetplot(edoxx, #node_label="all",
+         showCategory=100,
+         node_label = "category",
+         color_category = "darkred",
+         color_item = "gold",
+        cex_label_category = 1.2) 
+
+```
+
+
+
+```{r }
+#clipr::write_clip(paste(unique(protein_annotation[stable_expr,"gene_names"]),collapse = "\n"))
+
+
+stable_expr_out = merge(tumor_spec_mad[,c("Row.names","pooled_mad")],
+                                                  protein_annotation[,c("protein_group",
+                                                                        "gene_names")],
+                                                  by.x="Row.names",by.y="protein_group")
+stable_expr_out$stable = ifelse(stable_expr_out$Row.names %in% stable_expr_with_HPA$protein_group,"*","")
+stable_expr_out$Stable_and_potentially_druggable = ifelse(stable_expr_out$Row.names %in% stable_expr_and_druggable$protein_group,"*","")
+
+colnames(stable_expr_out) = c("Protein group",
+                              "Weighted average MAD",
+                              "Gene symbol",
+                              "Stable expression",
+                              "Stable expression and potentially druggable")
+
+
+ora_out = stable_ora@result[stable_ora@result$pvalue<0.05,c("Database",
+                                                            "Description",
+                                                            "GeneRatio",
+                                                            "BgRatio",
+                                                            "pvalue",
+                                                            "p.adjust",
+                                                            "geneID_symbols")]
+
+
+colnames(ora_out) = c("Database",
+                                          "Description",
+                                          "Geneset ratio",
+                                          "Background ratio",
+                                          "P-value",
+                                          "Adjusted p-value",
+                                          "Gene symbols")
+
+
+
+
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Weighted average MAD values", gridLines = TRUE)
+writeData(wb, "Weighted average MAD values", stable_expr_out)
+addWorksheet(wb, sheet = "ORA on stable proteins", gridLines = TRUE)
+writeData(wb, "ORA on stable proteins", ora_out)
+saveWorkbook(wb, file = "supplementary_tables/Table S7 - Stably expressed proteins.xlsx", overwrite = TRUE)
+
+```
+
+
+
+
+
+
+
+```{r }
+
+```
+
+
+
+```{r }
+
+```

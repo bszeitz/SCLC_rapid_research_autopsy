@@ -1,0 +1,245 @@
+---
+title: "Immune-hot vs -cold comparisons"
+author: "Bea Szeitz"
+---
+
+
+```{r}
+load("rdata/gene_protein_annotations.RData")
+load("rdata/sample_annotations.RData")
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl"),]
+# bad replicates are removed from the expr table in the next code chunk
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+source("helpers/load_packages.R")
+
+
+rna_expr_filt <- rnaseq$filt_log2
+prot_expr <- prot_expr_1_cleaned_nooutliers
+
+
+load("rdata/IHC_per_tumor.RData")
+row.names(per_tumor_annot) = per_tumor_annot$tumor_id
+
+```
+
+```{r }
+
+sample_annot_common <- unique(sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% c(colnames(rna_expr_filt) , colnames(prot_expr)),c("replicate_id", "sample_id", "rnaseq_id")])
+sample_annot_common = merge(per_tumor_annot,sample_annot_common, 
+                            by.x="tumor_id", by.y="sample_id")
+
+
+sample_annot_prot = sample_annot_common[sample_annot_common$replicate_id %in% colnames(prot_expr),]
+
+```
+
+
+
+```{r }
+proteomic_samples = sample_annot_common[sample_annot_common$replicate_id %in% colnames(prot_expr_1_cleaned_nooutliers),]
+
+proteomic_samples$group <- factor(proteomic_samples$cd3_intra_categorized, levels=c("low","high"))
+
+proteomic_samples_group = proteomic_samples[!is.na(proteomic_samples$group),]
+
+
+group <- proteomic_samples_group$group
+names(group) <- proteomic_samples_group$replicate_id
+design <- model.matrix(~ group)
+fit <- lmFit(filter_missingvalues(prot_expr_1_cleaned_nooutliers[,names(group)],50), design)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+dge_results_prot_CD3 <- topTable(fit, coef = "grouphigh", number=Inf)
+dge_results_prot_CD3 <- merge(dge_results_prot_CD3, unique(protein_annotation[,c("protein_group",
+                                                                         "selected_entrez_first",
+                                                                         "gene_names")]), by.x="row.names", 
+                          by.y = "protein_group",all.x=T)
+
+
+```
+
+
+
+
+```{r }
+
+
+DE_cd3_up <- dge_results_prot_CD3[dge_results_prot_CD3$adj.P.Val < 0.25 &
+                                                !is.na(dge_results_prot_CD3$adj.P.Val) &
+                                                dge_results_prot_CD3$logFC>0,] #&
+                                          #abs(DE_A_infl_vs_A$Coef_A_infl_vs_A) > log2(1.5),]
+
+
+DE_cd3_dn <- dge_results_prot_CD3[dge_results_prot_CD3$adj.P.Val < 0.25 &
+                                                !is.na(dge_results_prot_CD3$adj.P.Val) &
+                                                dge_results_prot_CD3$logFC<0,] #&
+                                          #abs(DE_A_infl_vs_A$Coef_A_infl_vs_A) > log2(1.5),]
+
+
+```
+
+
+```{r , fig.width=12, fig.height=12}
+
+ht = draw(Heatmap(t(scale(t(prot_expr_1_cleaned_nooutliers[c(DE_cd3_up$Row.names,
+                                                   DE_cd3_dn$Row.names),
+                                                 proteomic_samples_group$replicate_id]))),
+        column_split = paste("CD3 intra",proteomic_samples_group$cd3_intra_categorized,sep="\n"), 
+        row_labels = c(DE_cd3_up$gene_names,
+                                                   DE_cd3_dn$gene_names),
+        column_labels = proteomic_samples_group$replicate_id,
+        cluster_rows = T,
+        width = unit(nrow(proteomic_samples_group)*0.5,"cm"),
+        height = unit(nrow(rbind(DE_cd3_up,DE_cd3_dn))*0.5,"cm"),
+        top_annotation = HeatmapAnnotation(df =proteomic_samples_group[, c("cd3_intra_mean","patient","ihc_subtype")],
+                                           which="col",
+                                           col=colorlist,
+                                           annotation_name_side = "right",
+                                           gp = gpar(col = "grey"),
+                                           show_legend = TRUE,
+                                           show_annotation_name = TRUE),
+        col= colorlist$`z-score`,
+        name="Protein expr.\nZ-score"),
+     annotation_legend_side="bottom", heatmap_legend_side="bottom",
+     column_title = paste0(nrow(rbind(DE_cd3_up,DE_cd3_dn))," significant proteins (adj.p<0.25)")
+     )
+ht
+
+nrow(rbind(DE_cd3_up,DE_cd3_dn))
+
+
+export_heatmap_png(filename = "figs/cd3_high_vs_low_heatmap", 
+                   width = 12, height=12, ht_object=ht)
+
+
+```
+
+
+
+# GSEA
+
+
+```{r }
+
+rank_prot_cd3 <- create_rank(dea_res = dge_results_prot_CD3,
+                       coef_col = "logFC",
+                       p_col = "P.Value",
+                       gene_col = "selected_entrez_first",
+                       use_p=TRUE)
+hist(rank_prot_cd3)
+
+
+ranks <- list(prot_cd3 = rank_prot_cd3)
+
+```
+
+
+
+```{r }
+load("rdata/reactome_hierarchy.RData")
+
+
+run_pgsea_analysis = FALSE
+
+all_genes = unique(c(dge_results_prot_CD3$selected_entrez_first))
+
+if (run_pgsea_analysis){
+  
+  geneset_info_for_gsea = extract_kegg_reactome_genesets(all_genes)
+  
+  pgsea_res = run_pgsea(rank_list = ranks, 
+                        geneset_info_for_gsea = geneset_info_for_gsea)
+  
+  save(pgsea_res,geneset_info_for_gsea, file="rdata/ihc_markers_pGSEA.RData")
+  
+} else {
+  load("rdata/ihc_markers_pGSEA.RData")
+}
+
+GSEA_list = pgsea_res$GSEA_list
+GSEA_results_matrix = pgsea_res$GSEA_matrix
+
+GSEA_results_matrix$Description = paste(GSEA_results_matrix$Database,
+                                        GSEA_results_matrix$Description,
+                                        sep="- ")
+
+GSEA_results_matrix$Data = NULL
+
+```
+
+
+
+
+
+
+```{r , fig.width=7, fig.height=2.5}
+cd3_gsea_signif <- GSEA_results_matrix[GSEA_results_matrix$p.adjust < 0.05,]
+
+cd3_gsea_signif[cd3_gsea_signif$NES <0,"Description"]
+cd3_gsea_signif[cd3_gsea_signif$NES >0,"Description"]
+
+top5_up = cd3_gsea_signif[cd3_gsea_signif$NES>0,"Description"][1:5]
+top5_dn = cd3_gsea_signif[cd3_gsea_signif$NES<0,"Description"][1:5]
+
+
+cd3_gsea_signif <- cd3_gsea_signif[order(cd3_gsea_signif$NES),]
+cd3_gsea_signif = cd3_gsea_signif[cd3_gsea_signif$Description %in% c(top5_up,top5_dn),]
+
+cd3_gsea_signif$label <- factor(cd3_gsea_signif$Description, levels = unique(cd3_gsea_signif$Description))
+cd3_gsea_signif$`GSEA\nadj.p-value` <- cd3_gsea_signif$p.adjust
+
+ggplot(cd3_gsea_signif, aes(x=label,y=NES, fill=`GSEA\nadj.p-value`))+geom_bar(stat="identity")+
+  coord_flip()+
+  theme_classic() +xlab("")+ylab("Normalized enrichment score\n(CD3 intra high vs CD3 intra low)")+
+  scale_fill_gradient2(low ="#a00000", 
+                       mid="orange", 
+                       high="gold", midpoint = 1.5e-09)
+
+
+
+ggsave("figs/cd3_high_vs_low_gsea.png")
+ggsave("figs/cd3_high_vs_low_gsea.svg")
+ggsave("figs/cd3_high_vs_low_gsea.pdf")
+
+```
+
+
+
+```{r }
+dge_res_export = dge_results_prot_CD3[dge_results_prot_CD3$adj.P.Val<0.25 &!is.na(dge_results_prot_CD3$P.Value),
+                               c("Row.names",
+                                 "logFC",
+                                 "P.Value",
+                                 "adj.P.Val",
+                                 "selected_entrez_first",
+                                 "gene_names")]
+colnames(dge_res_export) = c("Protein group", "log2FC (immune-hot vs -cold)",
+                             "P-value","Adjusted p-value", "ENTREZ ID", "Gene symbol")
+
+
+gsea_res_export = GSEA_results_matrix[GSEA_results_matrix$p.adjust < 0.05,c("Description",
+                                                                    "NES", "pvalue","p.adjust",
+                                                                    "ID",
+                                                                    "core_enrichment_symbols")]
+colnames(gsea_res_export) = c("Geneset", "Normalized enrichment score (NES) (immune-hot vs -cold)",
+                             "P-value","Adjusted p-value", "Geneset ID", "Core enrichment")
+
+library(openxlsx)
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Differential expr. analysis", gridLines = TRUE)
+writeData(wb, "Differential expr. analysis", 
+          dge_res_export)
+addWorksheet(wb, sheet = "Gene set enrichm. analysis", gridLines = TRUE)
+writeData(wb, "Gene set enrichm. analysis", 
+          gsea_res_export)
+
+saveWorkbook(wb, file = "supplementary_tables/Table S8 - Immune-hot vs -cold comparison.xlsx", overwrite = TRUE)
+
+```
+
+
+
+

@@ -1,0 +1,704 @@
+---
+title: "Tumor-wise similarity calculations"
+author: "Bea Szeitz"
+---
+
+
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+```{r}
+
+load("rdata/histology_linregr.RData")
+
+
+loaded = load("rdata/tumor_vs_ctrl_results.RData")
+loaded
+
+```
+
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+load("rdata/gene_protein_annotations.RData")
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+#note: this information has not been made publicly available about the patients, skip if you rerun the script
+load("rdata/diagnosis_time_info.RData")
+sample_annot_withrepl = merge(sample_annot_withrepl, diagn_time_info,by="tumor_id",all.x=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+sample_annot_withrepl$diagnosis_time_m = ifelse(sample_annot_withrepl$origin=="lymph_node",
+                                                NA,
+                                                sample_annot_withrepl$diagnosis_time_m)
+
+```
+
+
+```{r }
+
+sample_annot_withrepl$NE_score = sample_annot_withrepl$NE_geneset
+sample_annot_withrepl$inflamed_score = sample_annot_withrepl$Park_inflamed_signature
+sample_annot_withrepl$immune_infiltration_score = sample_annot_withrepl$ESTIMATE_immune
+sample_annot_withrepl$stromal_infiltration_score = sample_annot_withrepl$ESTIMATE_stromal
+
+
+
+```
+
+
+
+
+```{r , fig.width=20, fig.height=5}
+up_in_tumors = dge_results_prot[dge_results_prot$logFC>0 &
+                                  dge_results_prot$adj.P.Val<0.05 &
+                                  !is.na(dge_results_prot$adj.P.Val),]
+
+prot_tumor_expr = t(scale(t(filter_missingvalues(both_batchcorr[up_in_tumors$Row.names,!grepl("ctrl",colnames(both_batchcorr))],80))))
+
+sample_annot_withrepl_prot_tumor_expr = sample_annot_withrepl[colnames(prot_tumor_expr),]
+
+
+calculate_eucl_distances = function(expr_matrix, sample_annot_to_use, data_name){
+  
+  # Transpose expr_matrix to samples x genes
+  expr_matrix <- t(expr_matrix)
+  # Compute Euclidean distance matrix between all samples
+  dist_matrix <- as.matrix(dist(expr_matrix, method = "euclidean"))
+  
+  # Prepare pairwise combinations of samples
+  sample_ids <- rownames(expr_matrix)
+  sample_pairs <- expand.grid(sample1 = sample_ids, sample2 = sample_ids, stringsAsFactors = FALSE)
+  
+  x=1
+  sample_pairs$pair = sapply(seq(1,nrow(sample_pairs)),function(x){
+    
+    samples = as.character(sample_pairs[x,])
+    return(paste(samples[order(samples)],collapse = "_"))
+    
+  })
+  
+  # Remove duplicate pairs
+  sample_pairs = sample_pairs[!duplicated(sample_pairs$pair),]
+  
+  # Add patient info to sample pairs
+  sample_pairs <- sample_pairs %>%
+    merge(sample_annot_withrepl_prot_tumor_expr[,c("replicate_id","patient","tumor_id")], 
+          by.x="sample1", by.y="replicate_id") %>%
+    rename(patient1 = patient) %>%
+    merge(sample_annot_withrepl_prot_tumor_expr[,c("replicate_id","patient","tumor_id")], 
+          by.x="sample2", by.y="replicate_id") %>%
+    rename(patient2 = patient)
+  
+  # Add distances
+  sample_pairs$distance <- mapply(function(s1, s2) dist_matrix[s1, s2],
+                                  sample_pairs$sample1, sample_pairs$sample2)
+  
+  # Remove self-comparisons
+  sample_pairs = sample_pairs[sample_pairs$distance>0,]
+  
+  # Classify as within-patient or across-patient
+  sample_pairs$group <- ifelse(sample_pairs$patient1 == sample_pairs$patient2,
+                               "Within-patient", "Across-patients")
+  sample_pairs$group2 <- ifelse(sample_pairs$tumor_id.x == sample_pairs$tumor_id.y,
+                                "Within tumor site", sample_pairs$group)
+  
+  
+  sample_pairs = rbind(data.frame(group = sample_pairs$group2,
+                                   patient = sample_pairs$patient1,
+                                   distance = sample_pairs$distance),
+                        data.frame(group = sample_pairs$group2,
+                                   patient = sample_pairs$patient2,
+                                   distance = sample_pairs$distance))
+  
+  
+  sample_pairs$data = data_name
+  
+  return(sample_pairs)
+}
+
+sample_pairs_prot = calculate_eucl_distances(prot_tumor_expr, sample_annot_withrepl_prot_tumor_expr, "Proteomics")
+
+
+
+
+up_in_tumors_rna = dge_results_rnaseq[dge_results_rnaseq$logFC>0 &
+                                  dge_results_rnaseq$adj.P.Val<0.05 &
+                                  !is.na(dge_results_rnaseq$adj.P.Val),]
+
+rna_tumor_expr = t(scale(t(rnaseq$full_log2[row.names(rnaseq$full_log2) %in% up_in_tumors_rna$Row.names,!grepl("ctrl",colnames(rnaseq$full_log2))])))
+
+sample_annot_withrepl_rna_tumor_expr = sample_annot_withrepl[colnames(rna_tumor_expr),]
+
+
+sample_pairs_rna = calculate_eucl_distances(rna_tumor_expr, sample_annot_withrepl_rna_tumor_expr, "RNA-Seq")
+
+
+
+```
+
+
+
+```{r , fig.width=25, fig.height=8}
+sample_pairs_comb = rbind(sample_pairs_rna, sample_pairs_prot)
+
+
+sample_pairs_comb$group = factor(sample_pairs_comb$group,
+                                 levels = c("Across-patients",
+                                            "Within-patient",
+                                            "Within tumor site"))
+
+ggplot(sample_pairs_comb, aes(x = group, y = distance, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
+  theme_classic() +
+  labs(title = "Within- vs across-patient sample similarity based on tumor-specific transcript/protein expression",
+       x = "", y = "Euclidean Distance") +
+  theme(legend.position = "bottom")+stat_pwc(label = "p.format",p.adjust.method = "none")+
+  facet_grid(cols=vars(patient),
+             rows=vars(data))+theme(axis.text.x = element_blank())+
+  scale_fill_manual(values = c("black","green3","gold"))
+
+ggsave("figs/patient_summary_distances.png")
+ggsave("figs/patient_summary_distances.pdf")
+ggsave("figs/patient_summary_distances.svg")
+
+```
+
+
+
+
+```{r }
+
+#sampleorder = tumor_order
+#prot_tab = prot_expr_pertumor
+#rna_tab = rna_expr_filt_pertumor
+
+create_cormat <- function(sampleorder,
+                          prot_tab,
+                          rna_tab){
+  
+  if (!all(sampleorder %in% colnames(prot_tab))){
+    
+    missing_sample <- sampleorder[!sampleorder %in% colnames(prot_tab)]
+    
+    newtab <- as.data.frame(prot_tab)
+    
+    newtab[,missing_sample] <- NA
+    
+    prot_cormat <- cor(newtab[,sampleorder], 
+                     use="pairwise.complete.obs")
+    
+    
+    
+  } else {
+    prot_cormat <- cor(prot_tab[,sampleorder], 
+                     use="pairwise.complete.obs")
+  }
+  
+  if (!all(sampleorder %in% colnames(rna_tab))){
+    
+    missing_sample <- sampleorder[!sampleorder %in% colnames(rna_tab)]
+    
+    newtab <- as.data.frame(rna_tab)
+    
+    newtab[,missing_sample] <- NA
+    
+    rna_cormat <- cor(newtab[,sampleorder], 
+                     use="pairwise.complete.obs")
+    
+  } else {
+    rna_cormat <- cor(rna_tab[,sampleorder], 
+                     use="pairwise.complete.obs")
+  }
+  both_cormat <- rna_cormat[sampleorder,sampleorder]
+  both_cormat[is.na(both_cormat)] <- 0
+  both_cormat[upper.tri(both_cormat)] <- NA
+
+  diag(both_cormat) <- 1
+  
+  for (i in 1:nrow(both_cormat)){
+    
+    for (j in 1:ncol(both_cormat)){
+      
+      if (is.na(both_cormat[i,j])){
+        both_cormat[i,j] <- -1 * prot_cormat[row.names(both_cormat)[i],colnames(both_cormat)[j]]
+      }
+      
+    }
+    
+  }
+  both_cormat[is.na(both_cormat)] <- 0
+  
+  return(both_cormat)
+  
+}
+
+
+
+
+
+```
+
+
+
+
+
+# Average per tumor site
+
+
+```{r }
+
+tumor_annot_withrepl = sample_annot_withrepl[sample_annot_withrepl$type!="ctrl",]
+
+sample_annot_pertumor <- unique(tumor_annot_withrepl[,c("tumor_id",
+                                                         "patient",
+                                                         "origin",
+                                                         "type",
+                                                         "diagnosis_time_m",
+                                                        "cohort")])
+row.names(sample_annot_pertumor) = sample_annot_pertumor$tumor_id
+
+
+rna_expr_filt_pertumor <- average_expr_data(rnaseq$full_log2[row.names(rnaseq$full_log2) %in% up_in_tumors_rna$Row.names,],
+                                            tumor_annot_withrepl[tumor_annot_withrepl$replicate_id %in% colnames(rnaseq$full_log2),c("replicate_id",
+                                                                                 "tumor_id")])
+
+prot_expr_pertumor <- average_expr_data(both_batchcorr[up_in_tumors$Row.names,],
+                                        tumor_annot_withrepl[tumor_annot_withrepl$replicate_id %in% colnames(both_batchcorr),c("replicate_id",
+                                                                                 "tumor_id")])
+
+
+cont_vars = c("tumor","stroma",
+              "necrosis","normal",
+              "immune_infiltration_score",
+              "stromal_infiltration_score",
+              "NE_score",
+              "inflamed_score")
+
+
+sample_annot_pertumor$rnaseq_consensus_subtype = sapply(sample_annot_pertumor$tumor_id, function(x){
+  
+  if (any(grepl(x,colnames(rna_expr_filt_pertumor)))){
+    
+    subtys = na.omit(unique(tumor_annot_withrepl[tumor_annot_withrepl$tumor_id == x,"rnaseq_consensus_subtype"]))
+    
+    return(paste(subtys[order(subtys)],collapse = ","))
+    
+  } else {
+    return(NA)
+  }
+  
+  
+})
+
+for (i in 1:length(cont_vars)){
+  
+  print(i)
+  
+  sample_annot_pertumor[,cont_vars[i]] = NA
+  
+  sample_annot_pertumor[,cont_vars[i]] = as.numeric(sapply(sample_annot_pertumor$tumor_id, function(x){
+    
+    values = na.omit(tumor_annot_withrepl[tumor_annot_withrepl$tumor_id == x,cont_vars[i]])
+    
+    if (length(values)<2){
+      return(values)
+    } else {
+      return(mean(values, na.rm=T))
+    }
+    
+    
+  }))
+  
+  
+  
+}
+
+
+
+
+```
+
+```{r }
+
+cohort1_order = sample_annot_pertumor[sample_annot_pertumor$cohort =="cohort1",]
+cohort1_order <- cohort1_order[order(cohort1_order$diagnosis_time_m),]
+cohort1_order = rbind(cohort1_order[grepl("_prim",cohort1_order$tumor_id),],
+                      cohort1_order[!grepl("_prim",cohort1_order$tumor_id),])
+cohort1_order = cohort1_order[order(cohort1_order$patient),"tumor_id"]
+
+cohort2_order = sample_annot_pertumor[sample_annot_pertumor$cohort =="cohort2",]
+cohort2_order <- cohort2_order[order(cohort2_order$diagnosis_time_m),]
+cohort2_order = rbind(cohort2_order[grepl("_prim",cohort2_order$tumor_id),],
+                      cohort2_order[!grepl("_prim",cohort2_order$tumor_id),])
+cohort2_order <- cohort2_order[order(cohort2_order$patient),"tumor_id"]
+
+tumor_order = c(cohort1_order,cohort2_order)
+
+both_cormat <- create_cormat(tumor_order,
+                             prot_tab = prot_expr_pertumor,
+                             rna_tab = rna_expr_filt_pertumor)
+
+
+
+both_cormat_text <- both_cormat
+
+for (i in 1:nrow(both_cormat_text)){
+  
+  for (j in 1:ncol(both_cormat_text)){
+    
+    name1 <- strsplit(row.names(both_cormat_text)[i],split="_")[[1]][1]
+    name2 <- strsplit(colnames(both_cormat_text)[j],split="_")[[1]][1]
+    
+    if (name1 != name2){
+      both_cormat_text[i,j] <- ""
+    } else {
+      both_cormat_text[i,j] <- abs(round(as.numeric(both_cormat_text[i, j]),2))
+    }
+    
+  }
+  
+}
+
+
+```
+
+
+
+```{r , fig.width=5, fig.height=3}
+# Calculate mean and SD for inflamed score
+inflamed_stats <- sample_annot_pertumor %>% 
+  filter(!is.na(rnaseq_consensus_subtype)) %>% 
+  group_by(patient) %>% 
+  summarise(
+    mean_inflamed_score = mean(inflamed_score, na.rm = TRUE),
+    sd_inflamed_score = sd(inflamed_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Calculate mean and SD for NE score
+ne_stats <- sample_annot_pertumor %>% 
+  filter(!is.na(rnaseq_consensus_subtype)) %>% 
+  group_by(patient) %>% 
+  summarise(
+    mean_NE_score = mean(NE_score, na.rm = TRUE),
+    sd_NE_score = sd(NE_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Combine and reshape the data for plotting
+combined_stats <- left_join(inflamed_stats, ne_stats, by = "patient") %>%
+  pivot_longer(
+    cols = c(mean_inflamed_score, sd_inflamed_score, mean_NE_score, sd_NE_score),
+    names_to = c(".value", "metric"),
+    names_pattern = "(mean|sd)_(.*)"
+  ) %>%
+  mutate(
+    metric = recode(metric,
+      inflamed_score = "Inflamed score",
+      NE_score       = "NE score"
+    )
+  )
+
+combined_stats$rnaseq_subtypes = sapply(combined_stats$patient, function(x){
+  paste(unique(sample_annot_pertumor[sample_annot_pertumor$patient==x,"rnaseq_consensus_subtype"]),collapse = " // ")
+}) 
+
+# Plot: Mean with SD as error bars
+ggplot(combined_stats, aes(x = patient, y = mean, fill = metric)) +
+  geom_bar(stat = "identity", width = .7, position = position_dodge(width = 0.7)) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                position = position_dodge(width = 0.7),
+                width = .7) +
+  labs(
+    x = "",
+    y = "Mean ± SD",
+    title = ""
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 12, face = "bold")
+  ) +
+  scale_fill_manual(values = c("NE score" = "#7559A2FF",
+                               "Inflamed score" = "#FB8C00FF"))
+
+
+ggsave("figs/rna_scores_per_patient.png")
+ggsave("figs/rna_scores_per_patient.svg")
+ggsave("figs/rna_scores_per_patient.pdf")
+
+
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "RNASeq-based scores per patient", gridLines = TRUE)
+writeData(wb, "RNASeq-based scores per patient", combined_stats)
+saveWorkbook(wb, file = "supplementary_tables/rna_scores_per_patient.xlsx", overwrite = TRUE)
+
+```
+
+
+```{r , fig.width=10, fig.height=10}
+l_diagn = Legend(col_fun = colorlist$diagnosis_time_m, title = " \nDiagn.time\n(months)", 
+                 at = attr(colorlist$diagnosis_time_m, "breaks"))
+
+
+rnaseq_subtypes = na.omit(unique(sample_annot_pertumor$rnaseq_consensus_subtype))
+
+
+l_rnasub = Legend(at = rnaseq_subtypes, 
+                  title = "RNA-Seq\nconsensus\nsubtype", 
+                  legend_gp = gpar(fill = colorlist$rnaseq_consensus_subtype[rnaseq_subtypes]))
+
+
+
+l_hist = Legend(labels = c("tumor", "stroma", "necrosis", "normal"), title = " \n  \nHistology", 
+                legend_gp = gpar(fill = c(colorlist$histology["tumor"],
+                                          colorlist$histology["stroma"],
+                                          colorlist$histology["necrosis"],
+                                          colorlist$histology["normal"])))
+
+l_immune = Legend(col_fun = colorlist$immune_infiltration_score, title = "Immune\ninfilt.\nscore", 
+                  at = attr(colorlist$immune_infiltration_score, "breaks"))
+
+l_stromal = Legend(col_fun = colorlist$stromal_infiltration_score, title = "Stromal\ninfilt.\nscore", 
+                  at = attr(colorlist$stromal_infiltration_score, "breaks"))
+
+
+l_ne = Legend(col_fun = colorlist$NE_score, title = " \nNE\nscore", 
+                  at = attr(colorlist$NE_score, "breaks"))
+
+l_infl = Legend(col_fun = colorlist$inflamed_score, title = " \nInflamed\nscore", 
+                  at = attr(colorlist$inflamed_score, "breaks"))
+
+l_corrrna = Legend(col_fun = colorlist$corr, title = "Pearson\ncorr.\nRNA-Seq", 
+                  at = attr(colorlist$corr, "breaks"))
+l_corrprot = Legend(col_fun = colorlist$corr2, title = "Pearson\ncorr.\nProteomics", 
+                  at = attr(colorlist$corr2, "breaks"))
+
+
+l_patient = Legend(labels = names(colorlist$patient), title = " \n  \nPatient", 
+                legend_gp = gpar(fill = colorlist$patient))
+l_type = Legend(labels = c("ctrl tissue","primary","metastasis"), title = " \n  \nType", 
+                legend_gp = gpar(fill = colorlist$type[c("ctrl tissue","primary","metastasis")]))
+l_origin = Legend(labels = names(colorlist$origin), title = " \n  \nOrigin", 
+                legend_gp = gpar(fill = colorlist$origin))
+
+
+```
+
+
+
+# main fig, patient summary per tumor site
+
+
+```{r , fig.width=17, fig.height=17}
+
+Histology <- sample_annot_pertumor[colnames(both_cormat),c("tumor", "stroma", "necrosis", "normal")]
+Histology[is.na(Histology)] <- 0
+
+top_ha <- HeatmapAnnotation(df = sample_annot_pertumor[colnames(both_cormat),c(
+                                                                               "patient",
+                                                                               "diagnosis_time_m",
+                                                                               "type",
+                                                                               "origin")],
+                            "Hist." = anno_barplot(Histology,
+                                                   gp = gpar(fill = c(colorlist$histology["tumor"],
+                                                                      colorlist$histology["stroma"],
+                                                                      colorlist$histology["necrosis"],
+                                                                      colorlist$histology["normal"])),
+                                                   height = unit(1.5, "cm"),
+                                                   axis_param = list(
+                                                     side = "right",
+                                                     at = c(0.25,0.50,0.75), 
+                                                     labels = c("25%","50%", "75%") )),
+                            col = colorlist,
+                            which = "column",
+                            annotation_name_side = "left",
+                            gap = unit(c(2,0.5,0.5,2), 'mm'),
+                            gp = gpar(col = "lightgray"),
+                            show_legend = FALSE,
+                            border = TRUE,
+                            show_annotation_name = TRUE)
+
+left_ha <- HeatmapAnnotation(df = sample_annot_pertumor[colnames(both_cormat),c("immune_infiltration_score",
+                                                                                "stromal_infiltration_score",
+                                                                          "rnaseq_consensus_subtype",
+                                                                         "NE_score",
+                                                                         #"nonNE_geneset",
+                                                                         "inflamed_score")],
+                           
+                           #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 9)),
+                           col = colorlist,
+                           #annotation_name_side = "left",
+                           which = "row",
+                           #gap = unit(c(), 'mm'),
+                           gp = gpar(col = "lightgray"),
+                           show_legend = FALSE,
+                           border = TRUE,
+                           show_annotation_name = TRUE)
+
+right_ha <- HeatmapAnnotation(df = sample_annot_pertumor[row.names(both_cormat),c("patient",
+                                                                               "type",
+                                                                               "origin")],
+                           
+                           #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 9)),
+                           col = colorlist,
+                           #annotation_name_side = "left",
+                           which = "row",
+                           #gap = unit(c(), 'mm'),
+                           gp = gpar(col = "lightgray"),
+                           show_legend = FALSE,
+                           border = TRUE,
+                           show_annotation_name = TRUE)
+
+
+both_cormat[both_cormat==0] = NA
+
+all(row.names(both_cormat) == colnames(both_cormat))
+
+ht <- Heatmap(both_cormat, 
+              name="corr",
+        col = colorlist$corr_combined,
+        column_split = factor(sapply(strsplit(colnames(both_cormat),split="_"),"[[",1),
+                              levels = unique(sapply(strsplit(colnames(both_cormat),split="_"),"[[",1))),
+        row_split = factor(sapply(strsplit(row.names(both_cormat),split="_"),"[[",1),
+                           levels= unique(sapply(strsplit(row.names(both_cormat),split="_"),"[[",1))),
+        cluster_column_slices = FALSE,
+        cluster_row_slices = FALSE,
+        right_annotation = right_ha,
+        #row_split = ihc_and_scores2[colnames(both_cormat),"patient"],
+        #column_title = "Patient 1",
+        #cell_fun = function(j, i, x, y, width, height, fill) {
+        #  grid.text(both_cormat_text[i, j], x, y, gp = gpar(fontsize = 10, col ="white"))},
+        #column_labels = gsub("_prim_lung", "_prim",gsub("_met", "",colnames(both_cormat))),
+        #row_labels = gsub("_prim_lung", "_prim",gsub("_met", "",row.names(both_cormat))),
+        column_names_side = "bottom",
+        cluster_rows = FALSE, 
+        cluster_columns = FALSE,
+        width = unit(ncol(both_cormat)*0.27, "cm"), height = unit(ncol(both_cormat)*0.27, "cm"),
+        show_row_names = FALSE,
+        row_title = NULL,
+        column_title = NULL,
+        show_column_names = FALSE,
+        column_title_rot = 45,
+        na_col="white",
+        border = FALSE,
+        column_gap = unit(0.15,"cm"),
+        row_gap = unit(0.15,"cm"),
+        top_annotation = top_ha, 
+        show_heatmap_legend = FALSE,
+        left_annotation = left_ha
+        #right_annotation = right_ha,
+        )
+
+
+draw(ht)
+
+
+pd = packLegend(l_patient,l_diagn, l_type, 
+                l_origin, l_hist,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.3, "npc"), just = c("left", "bottom"))
+pd = packLegend(l_rnasub, 
+                l_immune, l_stromal, 
+                l_ne, l_infl, l_corrrna, l_corrprot,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.2, "npc"), just = c("left", "bottom"))
+
+
+```
+
+
+```{r }
+
+png(filename = "figs/corr_heatmap_patient_summary_avrtumor.png",
+    width = 17, height = 17, units = "in",res = 600)
+draw(ht)
+pd = packLegend(l_patient,l_diagn, l_type, 
+                l_origin, l_hist,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.3, "npc"), just = c("left", "bottom"))
+pd = packLegend(l_rnasub, 
+                l_immune, l_stromal, 
+                l_ne, l_infl, l_corrrna, l_corrprot,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.2, "npc"), just = c("left", "bottom"))
+dev.off()
+
+
+svg(filename = "figs/corr_heatmap_patient_summary_avrtumor.svg",
+    width = 17, height = 17)
+draw(ht)
+pd = packLegend(l_patient,l_diagn, l_type, 
+                l_origin, l_hist,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.3, "npc"), just = c("left", "bottom"))
+pd = packLegend(l_rnasub, 
+                l_immune, l_stromal, 
+                l_ne, l_infl, l_corrrna, l_corrprot,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.2, "npc"), just = c("left", "bottom"))
+dev.off()
+
+
+pdf(file = "figs/corr_heatmap_patient_summary_avrtumor.pdf",
+    width = 17, height = 17)
+draw(ht)
+pd = packLegend(l_patient,l_diagn, l_type, 
+                l_origin, l_hist,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.3, "npc"), just = c("left", "bottom"))
+pd = packLegend(l_rnasub, 
+                l_immune, l_stromal, 
+                l_ne, l_infl, l_corrrna, l_corrprot,
+                max_width = unit(30, "cm"),
+                direction = "horizontal")
+draw(pd, x = unit(0.17, "npc"), y = unit(0.2, "npc"), just = c("left", "bottom"))
+dev.off()
+
+
+```
+
+
+
+```{r }
+
+```
+
+
+
+
+
+

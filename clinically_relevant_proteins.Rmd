@@ -1,0 +1,881 @@
+---
+title: "Overview of clinically relevant proteins"
+author: "Bea Szeitz"
+---
+
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+
+```{r}
+
+load("rdata/histology_linregr.RData")
+load("rdata/tumor_vs_ctrl_results.RData")
+
+tumor_vs_ctrl_prot_dea = dge_results_prot
+
+
+```
+
+
+
+```{r}
+load("rdata/sample_annotations.RData")
+outlier_samples = c("KSCLC153_brain_met" , "KSCLC158_liver_ctrl_3", "KSCLC153_peritoneal_ctrl")
+histology_flagged_samples = c("KSCLC147_lung_prim","KSCLC153_lung_met" , "KSCLC179_liver_B_met" ,       
+                              "KSCLC179_lung_prim", "KSCLC180_adrenal_gland_A_met", "KSCLC180_kidney_B_met",
+                              "KSCLC180_lung_B_met" ,"KSCLC189_lung_prim" ,"KSCLC205_lung_ctrl" ,
+                              "KSCLC205_lymph_node_A_N1_met", "KSCLC205_lymph_node_B_N1_met" ,
+                              "KSCLC207_adrenal_gland_A_met","KSCLC207_liver_B_met", "KSCLC207_liver_C_met",
+                              "KSCLC207_subcutan_met" ,"KSCLC210_adrenal_gland_met" ,  "KSCLC210_pleura_met",
+                              "KSCLC212_cerebellum_met",
+                              "KSCLC212_peritoneal_ctrl") # the last one is with 90% tumor content
+sample_annot_withrepl <- sample_annot_withrepl[! sample_annot_withrepl$replicate_id %in% 
+                                                 c(outlier_samples,histology_flagged_samples),]
+
+
+load("rdata/gene_protein_annotations.RData")
+protein_annotation = protein_annotation_nonredundant
+colnames(protein_annotation)[1] = "protein_group"
+
+load("rdata/proteomics.RData")
+load("rdata/rna_seq.RData")
+load("rdata/single_sample_scores_rnaseq.RData")
+
+estimate <- as.data.frame(t(single_sample_scores_rnaseq))
+estimate$replicate_id <- row.names(estimate)
+
+sample_annot_withrepl <- merge(sample_annot_withrepl, estimate,by="replicate_id", all=T)
+row.names(sample_annot_withrepl) <- sample_annot_withrepl$replicate_id
+
+
+
+proteomic_samples <- sample_annot_withrepl[ !is.na(sample_annot_withrepl$proteomics),
+                                           ]
+row.names(proteomic_samples) <- proteomic_samples$replicate_id
+
+tumor_samples = proteomic_samples[!grepl("ctrl",row.names(proteomic_samples)),]
+
+both_batchcorr = both_batchcorr[,proteomic_samples$replicate_id]
+
+
+```
+
+
+
+```{r }
+
+protein_list <- as.data.frame(read.xlsx("files/SCLC_RRA protein list_KB_MP_BS.xlsx"))
+protein_list <- na.omit(unique(unlist(strsplit(protein_list$final_name, split=","))))
+protein_list = c(unlist(lapply(protein_list, trimws)),"CD276") # cd276= b7-h3
+protein_list = c(protein_list, "NTRK1") # this is TRK in the original table (typo: RTK), neurotrophin receptor kinase
+protein_list
+#protein_list[order(prNULL#protein_list[order(protein_list)]
+protein_list[grepl("KDM1A",protein_list)] = "KDM1A"
+
+protein_list[grepl("CD276",protein_list)]
+#protein_list[grepl("CD274",protein_list)]
+
+protein_list[!protein_list%in%protein_annotation$gene_names]
+
+sapply(protein_list[!protein_list%in%protein_annotation$gene_names],
+       function(x){any(grepl(x,protein_annotation$gene_names))})
+# none of these are detectable in our proteomic data
+
+
+```
+
+
+
+```{r }
+
+clinrel_protein_list = data.frame(gene_names = protein_list,
+                                  nr_valid_values_total = 0,
+                                  perc_valid_values_in_ctrls = 0,
+                                  perc_valid_values_in_primaries = 0,
+                                  perc_valid_values_in_metastases = 0,
+                                  perc_valid_values_in_tumors = 0)
+
+clinrel_protein_list$gene_names = gsub("FGRFR2","FGFR2",clinrel_protein_list$gene_names)
+
+clinrel_proteins = merge(clinrel_protein_list, 
+                         protein_annotation, by="gene_names", all.x=T)
+
+clinrel_proteins$nr_valid_values_total = sapply(clinrel_proteins$protein_group,
+                                          function(x){
+                                            if (x %in% row.names(both_batchcorr)){
+                                              length(na.omit(both_batchcorr[x,]))
+                                            } else {
+                                              return(0)
+                                            }
+                                          })
+
+
+ctrls = grep("ctrl",colnames(both_batchcorr),value = TRUE)
+tumors = grep("_prim|_met",colnames(both_batchcorr),value = TRUE)
+primaries = grep("_prim",colnames(both_batchcorr),value = TRUE)
+metastases = grep("_met",colnames(both_batchcorr),value = TRUE)
+
+clinrel_proteins$perc_valid_values_in_ctrls = sapply(clinrel_proteins$protein_group,
+                                                     function(x){
+                                                       if (x %in% row.names(both_batchcorr)){
+                                                         (length(na.omit(both_batchcorr[x,ctrls]))/length(ctrls))*100
+                                                       } else {
+                                                         return(0)
+                                                       }
+                                                     })
+clinrel_proteins$perc_valid_values_in_tumors = sapply(clinrel_proteins$protein_group,
+                                                     function(x){
+                                                       if (x %in% row.names(both_batchcorr)){
+                                                         (length(na.omit(both_batchcorr[x,tumors]))/length(tumors))*100
+                                                       } else {
+                                                         return(0)
+                                                       }
+                                                     })
+clinrel_proteins$perc_valid_values_in_primaries = sapply(clinrel_proteins$protein_group,
+                                                     function(x){
+                                                       if (x %in% row.names(both_batchcorr)){
+                                                         (length(na.omit(both_batchcorr[x,primaries]))/length(primaries))*100
+                                                       } else {
+                                                         return(0)
+                                                       }
+                                                     })
+clinrel_proteins$perc_valid_values_in_metastases = sapply(clinrel_proteins$protein_group,
+                                                     function(x){
+                                                       if (x %in% row.names(both_batchcorr)){
+                                                         (length(na.omit(both_batchcorr[x,metastases]))/length(metastases))*100
+                                                       } else {
+                                                         return(0)
+                                                       }
+                                                     })
+
+
+
+
+```
+
+
+
+```{r }
+
+both_batchcorr_clinrel = both_batchcorr[row.names(both_batchcorr) %in% clinrel_proteins$protein_group,proteomic_samples$replicate_id]
+
+
+group <- factor(ifelse(proteomic_samples$type =="ctrl",0,1))
+names(group) <- proteomic_samples$replicate_id
+design <- model.matrix(~ group)
+fit <- lmFit(filter_missingvalues(both_batchcorr_clinrel[,names(group)],25), design)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+dge_results_prot <- topTable(fit, coef = "group1", number=Inf)
+
+dge_results_clin_rel_prot <- merge(dge_results_prot, clinrel_proteins, by.x="row.names", 
+                          by.y = "protein_group",all.x=T)
+row.names(dge_results_clin_rel_prot) = dge_results_clin_rel_prot$Row.names
+
+```
+
+
+
+```{r , fig.width=15, fig.height=15}
+
+
+patients <- unique(tumor_samples$patient)
+
+tumor_expr_25vv = filter_missingvalues(both_batchcorr_clinrel[,tumor_samples$replicate_id],25)
+tumor_expr_other = filter_missingvalues(both_batchcorr[!row.names(both_batchcorr) %in% clinrel_proteins$protein_group,tumor_samples$replicate_id],90)
+
+
+#tumor_contents = na.omit(setNames(tumor_samples$tumor,
+#                                                          tumor_samples$replicate_id))
+#tumor_expr_25vv_tumorcorr = histology_correction(tumor_expr_25vv[,names(tumor_contents)],
+#                                                 tumor_contents)
+#stroma_contents = na.omit(setNames(tumor_samples$stroma,
+#                                                          tumor_samples$replicate_id))
+#tumor_expr_25vv_stromacorr = histology_correction(tumor_expr_25vv[,names(stroma_contents)],
+#                                                 stroma_contents)
+
+adjtissue_contents = na.omit(setNames(tumor_samples$normal,
+                                                          tumor_samples$replicate_id))
+tumor_expr_25vv_normalcorr_clinrel = histology_correction(tumor_expr_25vv[,names(adjtissue_contents)],
+                                                 adjtissue_contents)
+
+
+tumor_expr_25vv_normalcorr_others = histology_correction(tumor_expr_other[,names(adjtissue_contents)],
+                                                 adjtissue_contents)
+
+```
+
+
+
+```{r }
+
+patients_min_2_samples = tumor_samples[tumor_samples$replicate_id %in% colnames(tumor_expr_25vv_normalcorr_clinrel),]
+patients_min_2_samples = unique(patients_min_2_samples[duplicated(patients_min_2_samples$patient),"patient"])
+
+wishlist_normalcorr_mad = calculate_pooled_mad(expr_tab = tumor_expr_25vv_normalcorr_clinrel,
+                                              patient_vector = patients_min_2_samples,
+                                              sample_patient_match = tumor_samples[tumor_samples$replicate_id %in% colnames(tumor_expr_25vv_normalcorr_clinrel),c("replicate_id","patient")])
+
+wishlist_normalcorr_mad = merge(wishlist_normalcorr_mad,
+                               protein_annotation[,c("protein_group",
+                                                     "gene_names")],
+                               by.y="protein_group", by.x="Row.names")
+row.names(wishlist_normalcorr_mad) = wishlist_normalcorr_mad$Row.names
+
+
+
+others_normalcorr_mad = calculate_pooled_mad(expr_tab = tumor_expr_25vv_normalcorr_others,
+                                              patient_vector = patients_min_2_samples,
+                                              sample_patient_match = tumor_samples[tumor_samples$replicate_id %in% colnames(tumor_expr_25vv_normalcorr_others),c("replicate_id","patient")])
+
+others_normalcorr_mad = merge(others_normalcorr_mad,
+                               protein_annotation[,c("protein_group",
+                                                     "gene_names")],
+                               by.y="protein_group", by.x="Row.names")
+row.names(others_normalcorr_mad) = others_normalcorr_mad$Row.names
+
+
+
+hist(wishlist_normalcorr_mad$pooled_mad)
+hist(others_normalcorr_mad$pooled_mad)
+
+compare_mad_distr = data_frame(mad_value = c(others_normalcorr_mad$pooled_mad,
+                                             #wishlist_tumorcorr_mad$pooled_mad,
+                                             wishlist_normalcorr_mad$pooled_mad),
+                               type = c(rep("housekeeping_proteins",nrow(others_normalcorr_mad)),
+                                        #rep("clin_relevant_tumorcorr",nrow(wishlist_tumorcorr_mad)),
+                                        rep("clin_relevant_normalcorr",nrow(wishlist_normalcorr_mad))))
+
+ggplot(compare_mad_distr, aes(x=mad_value,fill=type))+geom_density(alpha=0.5)
+
+ggplot(compare_mad_distr, aes(x=type,y=mad_value,color=type))+geom_boxplot()+geom_beeswarm()+stat_compare_means()
+
+#plot(as.numeric(wishlist_tumorcorr_mad[,"pooled_mad"]),
+#     as.numeric(wishlist_normalcorr_mad[wishlist_normalcorr_mad$Row.names,"pooled_mad"]))
+#correcting for tumor or stroma or adj.tissue brought similar results
+
+
+```
+
+
+```{r }
+quantile(others_normalcorr_mad$pooled_mad)
+
+iqr = quantile(others_normalcorr_mad$pooled_mad)[4] - quantile(others_normalcorr_mad$pooled_mad)[2] 
+1.5*iqr + quantile(others_normalcorr_mad$pooled_mad)[4]
+
+
+quantile(others_normalcorr_mad$pooled_mad)[2] - 1.5*iqr
+
+top_limit = quantile(others_normalcorr_mad$pooled_mad, probs=c(0.25,0.75))[2]
+bottom_limit = quantile(others_normalcorr_mad$pooled_mad, probs=c(0.25,0.75))[1]
+
+mean(others_normalcorr_mad$pooled_mad)
+median(others_normalcorr_mad$pooled_mad)
+
+
+top_limit
+bottom_limit
+
+```
+
+
+```{r , fig.width=10, fig.height=2}
+
+
+ggplot(compare_mad_distr, aes(x = mad_value, fill = type)) +
+  #geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  geom_density(alpha=0.5)+
+  xlab("Weighted avr. MAD") +
+  ylab("Density") +
+  labs(fill = "Protein type") +
+  theme_classic() +
+  scale_fill_manual(
+    labels = c("Clinically\nrelevant\nproteins", "Robustly\nquantified\nproteins"),
+    values = c("red", "black")
+  ) +
+  geom_vline(xintercept = c(top_limit, 
+                            bottom_limit), 
+             linetype = "dotted", color = "black") +
+  annotate("text", x = 0.15, y = 8, label = "stable\nexpression", vjust = 1.5, size = 3.5) +
+  annotate("text", x = 0.33, y = 8, label = "average\nvariability", vjust = 1.5, size = 3.5) +
+  annotate("text", x = 0.6, y = 8, label = "high\nvariability", vjust = 1.5, size = 3.5)+
+  annotate("text", x = bottom_limit, y = 8, label = "Q1", vjust = 1, size = 3.5, fontface = "bold") +
+  annotate("text", x = top_limit, y = 8, label = "Q3", vjust = 1, size = 3.5, fontface = "bold")
+
+
+ggsave("figs/clin_rel_proteins_MAD_density.png")
+ggsave("figs/clin_rel_proteins_MAD_density.pdf")
+ggsave("figs/clin_rel_proteins_MAD_density.svg")
+
+
+```
+
+
+```{r }
+rna_expr_filt <- rnaseq$full_log2
+prot_expr <- prot_expr_1_cleaned_nooutliers
+```
+
+
+
+```{r }
+
+sample_annot_common <- unique(sample_annot_withrepl[sample_annot_withrepl$replicate_id %in% intersect(colnames(rna_expr_filt) , colnames(prot_expr)),c("replicate_id", "sample_id")])
+
+rna_expr_filt_unique <- average_expr_data(rna_expr_filt,sample_annot_common)
+
+prot_expr_unique <- average_expr_data(prot_expr,sample_annot_common)
+
+
+```
+
+
+
+
+Create tables with unique genes
+
+```{r }
+
+rna_expr_filt_gene_sum <- select_gene_with_highest_expr(rna_expr_filt_unique, 
+                                                        gene_annotation[,c("ensembl_gene_id", "selected_entrez")])
+#rna_expr_filt_mor_gene <- select_gene_with_highest_expr(rna_expr_filt_mor, gene_annot[,c("ensembl_gene_id", "hgnc_symbol")])
+
+rna_expr_filt_gene <- rna_expr_filt_gene_sum$newtab
+rna_filter_summary <- rna_expr_filt_gene_sum$summary
+
+
+prot_expr_gene_sum <- select_gene_with_highest_expr(prot_expr_unique, 
+                                                    protein_annotation[,c("protein_group", "selected_entrez_first")])
+#rna_expr_filt_mor_gene <- select_gene_with_highest_expr(rna_expr_filt_mor, gene_annot[,c("ensembl_gene_id", "hgnc_symbol")])
+
+prot_expr_gene <- prot_expr_gene_sum$newtab
+prot_filter_summary <- prot_expr_gene_sum$summary
+
+
+prot_expr_tumor_filt <- filter_missingvalues(prot_expr_gene[,!grepl("_ctrl",colnames(prot_expr_gene)) ],25)
+prot_expr_ctrl_filt <- filter_missingvalues(prot_expr_gene[,grepl("_ctrl",colnames(prot_expr_gene))],25)
+
+
+
+```
+
+
+```{r }
+clinrel_entrez = alias2Symbol(clinrel_proteins$gene_names)
+clinrel_entrez = bitr(clinrel_entrez,
+                      fromType = "SYMBOL",
+                      toType = "ENTREZID",
+                      OrgDb = org.Hs.eg.db)
+clinrel_proteins[!clinrel_proteins$gene_names %in% clinrel_entrez$SYMBOL,]
+
+# Common genes across tumors
+genes_common_tumors <- intersect(row.names(prot_expr_tumor_filt), 
+                          row.names(rna_expr_filt_gene))
+genes_common_tumors <- genes_common_tumors[genes_common_tumors!="" & !is.na(genes_common_tumors)]
+genes_common_tumors = genes_common_tumors[genes_common_tumors %in% clinrel_entrez$ENTREZID]
+
+tumor_samples <- sample_annot_common[!grepl("ctrl",sample_annot_common$sample_id),]
+colnames(prot_expr_tumor_filt) %in% tumor_samples$sample_id
+
+
+
+rna_expr_common_tumor <- as.data.frame(rna_expr_filt_gene[genes_common_tumors,tumor_samples$sample_id])
+#rna_expr_mor_common_tumor <- as.data.frame(rna_expr_filt_mor_gene[genes_common_tumors,tumor_samples$rnaseq_new_id])
+#colnames(rna_expr_mor_common_tumor) <- tumor_samples$original_id
+
+
+
+prot_common_tumors <- prot_expr_tumor_filt[genes_common_tumors,tumor_samples$sample_id]
+
+
+
+```
+
+
+
+
+
+
+```{r }
+
+#df1 <- rna_expr_common_tumor
+#df2 <- prot_common_tumors
+#method <- "spearman"
+
+correlation_test <- function(df1, df2, method){
+  if (!all(row.names(df1) == row.names(df2))){
+    return(NA)
+    print("row names do not match!")
+  }
+  
+  if (!all(colnames(df1) == colnames(df2))){
+    return(NA)
+    print("column names do not match!")
+  }
+  
+  
+  if (method %in% c("pearson","spearman")){
+    
+    cor_res <- lapply(seq(1,nrow(df1)),function(x){
+      #print(x)                    
+      cr <- cor.test(as.numeric(df1[x,]), 
+               as.numeric(df2[x,]), method = method,
+               use="pairwise.complete.obs", exact = FALSE)
+      return(data.frame(gene = row.names(df1)[x],
+                        cor = cr$estimate,
+                  pvalue = cr$p.value))
+    })
+    
+    cor_res_df <- do.call(rbind,cor_res)
+    
+    
+  }
+  
+  cor_res_df$adjp <- p.adjust(cor_res_df$pvalue, method = "fdr")
+  
+  return(cor_res_df)
+  
+}
+
+
+tumors_tpm_spearman <- correlation_test(rna_expr_common_tumor, prot_common_tumors, "spearman")
+
+tumors_tpm_spearman = merge(tumors_tpm_spearman, clinrel_entrez,
+                            by.x="gene",by.y="ENTREZID")
+
+```
+
+
+```{r }
+
+
+tpm_quant = data.frame(symbol = clinrel_entrez$SYMBOL,
+                       entrezid = clinrel_entrez$ENTREZID)
+tpm_quant = gene_annotation[gene_annotation$selected_entrez %in% clinrel_entrez$ENTREZID,]
+
+
+#
+
+#clinrel_proteins_with_tpm$non_zero_tpm = sapply(, function(x){
+#  
+#  rnaseq$full
+#})
+
+clinrel_proteins_ultimate_sum = clinrel_proteins
+clinrel_proteins_ultimate_sum = merge(tumors_tpm_spearman,clinrel_proteins_ultimate_sum,
+                                      by.x="SYMBOL",by.y="gene_names",all=T)
+
+clinrel_proteins_ultimate_sum = merge(clinrel_proteins_ultimate_sum, 
+                                      dge_results_clin_rel_prot, 
+                                      by.x="protein_group",by.y="Row.names",all=T)
+
+clinrel_proteins_ultimate_sum = merge(clinrel_proteins_ultimate_sum, 
+                                      wishlist_normalcorr_mad, 
+                                      by.x="protein_group",by.y="Row.names",all=T)
+
+x = "P46937;P46937-9;P46937-6;P46937-7"
+clinrel_proteins_ultimate_sum$protein_group2 = sapply(clinrel_proteins_ultimate_sum$protein_group,
+                                                     function(x){
+                                                       if (grepl(";",x)){
+                                                         
+                                                         ordered = strsplit(x,split=";")[[1]]
+                                                         ordered = ordered[order(ordered)]
+                                                         basename_protein = strsplit(ordered[1],split="-")[[1]][1]
+                                                         ordered[2:length(ordered)] = gsub(basename_protein,
+                                                                                           "",
+                                                                                           ordered[2:length(ordered)])
+                                                         return(paste(ordered,collapse = ";"))
+                                                       } else {
+                                                         return(x)
+                                                       }
+                                                       
+                                                     })
+
+clinrel_proteins_ultimate_sum$row_name = ifelse(is.na(clinrel_proteins_ultimate_sum$protein_group),
+                                                     paste(clinrel_proteins_ultimate_sum$SYMBOL,
+                                                           "not detected", sep=" ("),
+                                                     paste(clinrel_proteins_ultimate_sum$SYMBOL,
+                                                           clinrel_proteins_ultimate_sum$protein_group2, sep=" (")) 
+clinrel_proteins_ultimate_sum$row_name = paste(clinrel_proteins_ultimate_sum$row_name,")",sep="")
+clinrel_proteins_ultimate_sum$protein_group = ifelse(is.na(clinrel_proteins_ultimate_sum$protein_group),
+                                                     clinrel_proteins_ultimate_sum$SYMBOL,
+                                                     clinrel_proteins_ultimate_sum$protein_group)
+
+row.names(clinrel_proteins_ultimate_sum) = clinrel_proteins_ultimate_sum$row_name
+
+```
+
+
+
+
+```{r }
+
+
+
+
+
+# Ensure the rownames are character
+desired_proteins <- as.character(clinrel_proteins_ultimate_sum$protein_group)
+
+# Reindex the rows, filling in NA for missing ones
+clin_rel_matrix <- as.data.frame(both_batchcorr[,proteomic_samples$replicate_id])[desired_proteins, , drop = FALSE]
+
+# Optionally, fill missing rows with NA manually if they don't exist
+missing_proteins <- setdiff(desired_proteins, rownames(both_batchcorr))
+
+if (length(missing_proteins) > 0) {
+  # Create an NA matrix/dataframe for missing proteins
+  na_rows <- matrix(NA, nrow = length(missing_proteins), ncol = ncol(both_batchcorr[,proteomic_samples$replicate_id]))
+  rownames(na_rows) <- missing_proteins
+  colnames(na_rows) <- colnames(both_batchcorr[,proteomic_samples$replicate_id])
+
+  # Combine with existing
+  clin_rel_matrix <- rbind(clin_rel_matrix, na_rows)
+
+  # Optional: sort to match original desired order
+  clin_rel_matrix <- clin_rel_matrix[desired_proteins, ]
+}
+
+clin_rel_matrix_scaled = t(scale(t(clin_rel_matrix)))
+clin_rel_matrix_scaled[is.na(clin_rel_matrix_scaled)] = -5
+
+
+```
+
+
+
+
+```{r , fig.width=20, fig.height=35}
+
+clinrel_proteins_ultimate_sum_detected = clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$nr_valid_values_total.x>0,]
+
+clin_rel_matrix_scaled_detected = clin_rel_matrix_scaled[clinrel_proteins_ultimate_sum_detected$protein_group,]
+
+sampleannot = proteomic_samples[colnames(clin_rel_matrix_scaled_detected),]
+sampleannot$patient_tumor = paste(sampleannot$patient,
+                                  ifelse(sampleannot$type =="ctrl",
+                                         "ctrl","tumor"),sep="_")
+
+Heatmap(clin_rel_matrix_scaled_detected[clinrel_proteins_ultimate_sum_detected$protein_group,],
+        col=colorlist$`z-score_withNA`,
+        column_split = sampleannot$patient_tumor,
+        cluster_column_slices = FALSE,
+        column_title_rot = 45,
+        column_title = NULL,
+        top_annotation = columnAnnotation(df = sampleannot[,c("patient",
+                                                              "type",
+                                                              "origin",
+                                                              "cohort")],
+                                          col = colorlist),
+        left_annotation =  rowAnnotation(df = clinrel_proteins_ultimate_sum_detected[,c("perc_valid_values_in_ctrls.x",
+                                                                                        "perc_valid_values_in_primaries.x",
+                                                                                        "perc_valid_values_in_metastases.x","logFC", "pooled_mad", "cor")],
+                                          col = colorlist),
+        row_labels = clinrel_proteins_ultimate_sum_detected$row_name,
+        show_row_dend = FALSE,
+        show_column_names = FALSE)
+
+```
+
+
+```{r , fig.width=10, fig.height=35}
+
+clinrel_proteins_ultimate_sum$tumor_specificity = "no_diff_btw_tumors_and_ctrls"
+clinrel_proteins_ultimate_sum$tumor_specificity = ifelse(clinrel_proteins_ultimate_sum$logFC>log2(1.5)&
+                                                           clinrel_proteins_ultimate_sum$P.Value<0.05&
+                                                           !is.na(clinrel_proteins_ultimate_sum$P.Value),
+                                                         "UP_in_tumors",clinrel_proteins_ultimate_sum$tumor_specificity)
+clinrel_proteins_ultimate_sum$tumor_specificity = ifelse(clinrel_proteins_ultimate_sum$logFC< -log2(1.5)&
+                                                           clinrel_proteins_ultimate_sum$P.Value<0.05&
+                                                           !is.na(clinrel_proteins_ultimate_sum$P.Value),
+                                                         "UP_in_ctrls",clinrel_proteins_ultimate_sum$tumor_specificity)
+
+clinrel_proteins_ultimate_sum$stability = "no_extreme_value"
+clinrel_proteins_ultimate_sum$stability = ifelse(clinrel_proteins_ultimate_sum$pooled_mad < bottom_limit &
+                                                           !is.na(clinrel_proteins_ultimate_sum$pooled_mad),
+                                                         "stable",clinrel_proteins_ultimate_sum$stability)
+clinrel_proteins_ultimate_sum$stability = ifelse(clinrel_proteins_ultimate_sum$pooled_mad > top_limit &
+                                                           !is.na(clinrel_proteins_ultimate_sum$pooled_mad),
+                                                         "variable",clinrel_proteins_ultimate_sum$stability)
+
+
+
+clinrel_proteins_ultimate_sum$gene_prot_corr = "no_corr_btw_transcripts_and_proteins"
+clinrel_proteins_ultimate_sum$gene_prot_corr = ifelse(clinrel_proteins_ultimate_sum$cor>0.4&
+                                                           clinrel_proteins_ultimate_sum$pvalue<0.05&
+                                                           !is.na(clinrel_proteins_ultimate_sum$pvalue),
+                                                         "pos_correlation",clinrel_proteins_ultimate_sum$gene_prot_corr)
+clinrel_proteins_ultimate_sum$gene_prot_corr = ifelse(clinrel_proteins_ultimate_sum$cor< -0.4 &
+                                                           clinrel_proteins_ultimate_sum$pvalue<0.05&
+                                                           !is.na(clinrel_proteins_ultimate_sum$pvalue),
+                                                         "neg_correlation",clinrel_proteins_ultimate_sum$gene_prot_corr)
+
+
+
+
+
+perc_matrix = clinrel_proteins_ultimate_sum[,c("perc_valid_values_in_ctrls.x",
+                                                        "perc_valid_values_in_primaries.x",
+                                                        "perc_valid_values_in_metastases.x")]
+
+
+Heatmap(perc_matrix[clinrel_proteins_ultimate_sum$row_name,],
+        col=colorlist$percentage,
+        #column_split = sampleannot$patient_tumor,
+        cluster_column_slices = FALSE,
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(round(perc_matrix[i, j],1), x, y, 
+                    gp = gpar(fontsize = 8, col ="white"))},
+        column_title_rot = 45,
+        cluster_columns = FALSE,
+        column_title = NULL,
+        border=TRUE,
+        row_split = factor(clinrel_proteins_ultimate_sum$stability,
+                           levels = c("stable","variable",
+                                      "no_extreme_value")),
+        cluster_row_slices = FALSE,
+        width = unit(2,"cm"),
+        left_annotation =  rowAnnotation(df = clinrel_proteins_ultimate_sum[,c("tumor_specificity", "stability", "gene_prot_corr")],
+                                          col = colorlist,
+                                         border=TRUE),
+        row_labels = clinrel_proteins_ultimate_sum$row_name,
+        show_row_dend = FALSE,
+        show_column_names = FALSE)
+
+
+
+
+```
+
+```{r , fig.width=17, fig.height=25}
+
+
+#ht_opt$ROW_ANNO_PADDING = unit(0.1, "cm")
+ht_global_opt(RESET = TRUE)
+hm_list = list()
+
+
+clinrel_proteins_ultimate_sum$`tumor specificity` = recode(clinrel_proteins_ultimate_sum$tumor_specificity,
+                                                            "UP_in_tumors" = "UP in tumors",
+                                                            "no_diff_btw_tumors_and_ctrls" = "no diff.",
+                                                            "UP_in_ctrls"  = "UP in ctrls")
+
+clinrel_proteins_ultimate_sum$`gene-protein corr.` = recode(clinrel_proteins_ultimate_sum$gene_prot_corr,
+                                                            "pos_correlation" = "positive (>0.40) corr.",
+                                                            "no_corr_btw_transcripts_and_proteins" = "no strong corr.")
+
+stable_clinrel_proteins = clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="stable",]
+high_variability_clinrel_proteins = clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="variable",]
+moderate_variability_clinrel_proteins = clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="no_extreme_value" &
+                                                                        clinrel_proteins_ultimate_sum$nr_valid_values_total.x>0,]
+
+
+hm_list[[1]] = grid.grabExpr(draw(Heatmap(perc_matrix[stable_clinrel_proteins$row_name,],
+        col=colorlist$percentage,
+        #column_split = sampleannot$patient_tumor,
+        cluster_column_slices = FALSE,
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(round(perc_matrix[stable_clinrel_proteins$row_name,][i, j],1), x, y, 
+                    gp = gpar(fontsize = 8, col ="white"))},
+        column_title_rot = 45,
+        cluster_columns = FALSE,
+        column_labels = c("Coverage in ctrls","Coverage in primaries","Coverage in metastases"),
+        column_names_side = "top",
+        column_names_rot = 45,
+        column_title = NULL,
+        border=TRUE,
+        height = unit(nrow(stable_clinrel_proteins)*0.4,"cm"),
+        #row_split = factor(clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="stable","stability"],
+        #                   levels = c("stable","variable",
+        #                              "no_extreme_value")),
+        cluster_row_slices = FALSE,
+        width = unit(2,"cm"),
+        left_annotation =  rowAnnotation(df = stable_clinrel_proteins[,c("tumor specificity",  "gene-protein corr.")],
+                                         col = colorlist,
+                                         `weighted avr. MAD` = anno_barplot(stable_clinrel_proteins$pooled_mad,
+                                                                  gp = gpar(fill =  colorlist$stability["stable"],
+                                                                            lwd = 0.5,
+                                                                            col = "lightgray"),
+                                                                  ylim = c(0,1.2),
+                                                                  axis_param = list(direction = "reverse")),
+                                         border=TRUE,
+                                         annotation_name_side = "top",
+                                         annotation_name_rot = 45,
+                                         show_legend = FALSE),
+        row_labels = stable_clinrel_proteins$row_name,
+        show_row_dend = FALSE,
+        show_heatmap_legend = FALSE,
+        show_column_names = TRUE)
+,
+        column_title = "Stable expression"))
+
+
+hm_list[[2]] = grid.grabExpr(draw(Heatmap(perc_matrix[high_variability_clinrel_proteins$row_name,],
+        col=colorlist$percentage,
+        #column_split = sampleannot$patient_tumor,
+        cluster_column_slices = FALSE,
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(round(perc_matrix[high_variability_clinrel_proteins$row_name,][i, j],1), x, y, 
+                    gp = gpar(fontsize = 8, col ="white"))},
+        column_title_rot = 45,
+        cluster_columns = FALSE,
+        column_labels = c("Coverage in ctrls","Coverage in primaries","Coverage in metastases"),
+        column_title = NULL,
+        border=TRUE,
+        column_names_side = "top",
+        column_names_rot = 45,
+        height = unit(nrow(high_variability_clinrel_proteins)*0.4,"cm"),
+        #row_split = factor(clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="stable","stability"],
+        #                   levels = c("stable","variable",
+        #                              "no_extreme_value")),
+        cluster_row_slices = FALSE,
+        width = unit(2,"cm"),
+        left_annotation =  rowAnnotation(df = high_variability_clinrel_proteins[,c("tumor specificity",  "gene-protein corr.")],
+                                         col = colorlist,
+                                         `weighted avr. MAD` = anno_barplot(high_variability_clinrel_proteins$pooled_mad,
+                                                                  gp = gpar(fill =  colorlist$stability["variable"],
+                                                                            lwd = 0.5,
+                                                                            col = "lightgray"),
+                                                                  ylim = c(0,1.2),
+                                                                  axis_param = list(direction = "reverse")),
+                                         border=TRUE,
+                                         annotation_name_side = "top",
+                                         annotation_name_rot = 45,
+                                         show_legend = FALSE),
+        row_labels = high_variability_clinrel_proteins$row_name,
+        show_row_dend = FALSE,
+        show_heatmap_legend = FALSE,
+        show_column_names = TRUE)
+,
+        column_title = "High variability"))
+
+hm_list[[3]] = grid.grabExpr(draw(Heatmap(perc_matrix[moderate_variability_clinrel_proteins$row_name,],
+        col=colorlist$percentage,
+        #column_split = sampleannot$patient_tumor,
+        cluster_column_slices = FALSE,
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(round(perc_matrix[moderate_variability_clinrel_proteins$row_name,][i, j],1), x, y, 
+                    gp = gpar(fontsize = 8, col ="white"))},
+        column_title_rot = 45,
+        column_labels = c("Coverage in ctrls","Coverage in primaries","Coverage in metastases"),
+        column_names_side = "top",
+        column_names_rot = 45,
+        cluster_columns = FALSE,
+        column_title = NULL,
+        border=TRUE,
+        name="%",
+        #row_split = factor(clinrel_proteins_ultimate_sum[clinrel_proteins_ultimate_sum$stability=="stable","stability"],
+        #                   levels = c("stable","variable",
+        #                              "no_extreme_value")),
+        cluster_row_slices = FALSE,
+        width = unit(2,"cm"),
+        height = unit(nrow(moderate_variability_clinrel_proteins)*0.4,"cm"),
+        left_annotation =  rowAnnotation(df = moderate_variability_clinrel_proteins[,c("tumor specificity",  "gene-protein corr.")],
+                                         col = colorlist,
+                                         annotation_name_side = "top",
+                                         annotation_name_rot = 45,
+                                         `weighted avr. MAD` = anno_barplot(moderate_variability_clinrel_proteins$pooled_mad,
+                                                                  gp = gpar(fill = "pink3",  #colorlist$stability["no_extreme_value"],
+                                                                            lwd = 0.5,
+                                                                            col = "lightgray"),
+                                                                  ylim = c(0,1.2),
+                                                                  axis_param = list(direction = "reverse")),
+                                         border=TRUE,
+                                         show_legend = TRUE),
+        row_labels = moderate_variability_clinrel_proteins$row_name,
+        show_row_dend = FALSE,
+        show_heatmap_legend = TRUE,
+        show_column_names = TRUE), heatmap_legend_side = "left", annotation_legend_side="left",
+        column_title = "Average variability"))
+
+
+wrap_plots(wrap_plots(hm_list[c(1,2)], 
+                      nrow = 2),
+           hm_list[[3]],ncol=2, nrow=1, widths = c(1,1))
+
+
+png(filename = "figs/wishlist_proteins_variability.png",
+    width = 17, height=25, units = "in",res = 600)
+wrap_plots(wrap_plots(hm_list[c(1,2)], 
+                      nrow = 2),
+           hm_list[[3]],ncol=2, nrow=1, widths = c(1,1))
+dev.off()
+
+svg(filename = "figs//wishlist_proteins_variability.svg",
+    width = 17, height=25)
+wrap_plots(wrap_plots(hm_list[c(1,2)], 
+                      nrow = 2),
+           hm_list[[3]],ncol=2, nrow=1, widths = c(1,1))
+dev.off()
+
+pdf(file = "figs/wishlist_proteins_variability.pdf",
+    width = 17, height=25)
+wrap_plots(wrap_plots(hm_list[c(1,2)], 
+                      nrow = 2),
+           hm_list[[3]],ncol=2, nrow=1, widths = c(1,1))
+dev.off()
+
+
+
+
+```
+
+
+# Export results
+
+
+```{r }
+clinrel_proteins_ultimate_sum_export = clinrel_proteins_ultimate_sum[,c("row_name",
+                                                                        "stability",
+                                                                        "tumor_specificity",
+                                                                        "gene_prot_corr",
+                                                                        "pooled_mad",
+                                                                        "cor","pvalue",
+                                                                        "logFC","pvalue",
+                                                                        "nr_valid_values_total.x",
+                                                                        "perc_valid_values_in_ctrls.x",
+                                                                        "perc_valid_values_in_primaries.x",
+                                                                        "perc_valid_values_in_metastases.x")]
+colnames(clinrel_proteins_ultimate_sum_export) = c("protein_group",
+                                                                        "Stability",
+                                                                        "Tumor specificity",
+                                                                        "Strong protein-transcript correlation",
+                                                                        "Weighted average MAD",
+                                                                        "Spearman's rho for gene-wise protein-transcript correlation","Spearman test p-value for gene-wise protein-transcript correlation",
+                                                                        "log2FC (tumor vs ctrl)","P-value (tumor vs ctrl)",
+                                                                        "Number of intensity values (total)",
+                                                                        "% of ctrl samples with protein intensity value",
+                                                                        "% of primary samples with protein intensity value",
+                                                                        "% of metastasis samples with protein intensity value")
+
+wb <- createWorkbook()
+addWorksheet(wb, sheet = "Clin rel proteins - summary", gridLines = TRUE)
+writeData(wb, "Clin rel proteins - summary", clinrel_proteins_ultimate_sum_export)
+saveWorkbook(wb, file = "supplementary_tables/Table S6 - Clinically relevant proteins.xlsx", overwrite = TRUE)
+
+```
+
+
+
+```{r }
+
+```
+
+
+
+```{r }
+
+```
+
+
+
+
+```{r }
+
+```
+

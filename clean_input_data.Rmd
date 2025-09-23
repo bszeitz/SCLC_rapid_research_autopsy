@@ -1,0 +1,437 @@
+---
+title: "Create RData objects from Supplementary Data"
+author: "Bea Szeitz"
+---
+
+```{r }
+source("helpers/load_packages.R")
+source("helpers/utility_functions.R")
+source("helpers/color_list.R")
+```
+
+# Sample annotations
+
+```{r }
+
+sample_annotation_raw <- as.data.frame(read_xlsx("files/Data S3.xlsx",
+                                                 sheet="Histology"))
+
+colnames(sample_annotation_raw) = c("tumor_id","sample_id","replicate_id","tumor","stroma","necrosis","normal", 
+                                        "proteomics", "rnaseq", "rnaseq_consensus_subtype","quality_flag", 
+                                        "proteomics_id", "rnaseq_id",
+                                        "cohort","patient", "origin_verbose", "origin", "type","sample_group")
+
+sample_annot_withrepl = sample_annotation_raw
+row.names(sample_annot_withrepl) = sample_annot_withrepl$replicate_id
+
+save(sample_annot_withrepl,
+     file = "rdata/sample_annotations.RData")
+
+```
+
+
+# RNA-Seq
+
+```{r }
+
+rna_raw <- as.data.frame(read_xlsx("files/Data S2.xlsx"))
+rna_expr <- rna_raw[,c(5:ncol(rna_raw))]
+row.names(rna_expr) <- rna_raw$`ENSEMBL gene ID`
+rna_expr <- apply(rna_expr, c(1,2),as.numeric)
+
+
+```
+
+
+```{r}
+txi <- readRDS("files/Gene_counts_tximport.rds")
+raw_counts <- txi[["counts"]]
+
+rnaseq_sample_id_conversion = data.frame(old_id = names(colnames(txi$counts)),
+                                         rnaseq_id = gsub("/salmon_quant", "", 
+                                                               gsub("V:/SCLC/RapidAutopsy/RNAseq/", "", names(colnames(txi$counts)), fixed = TRUE),
+                                                               fixed = TRUE),
+                                         check.names = FALSE)
+
+rnaseq_sample_id_conversion = merge(rnaseq_sample_id_conversion, sample_annotation_raw,by="rnaseq_id")
+row.names(rnaseq_sample_id_conversion) = rnaseq_sample_id_conversion$old_id
+
+sampleinfo <- data.frame(sample = rnaseq_sample_id_conversion$old_id,
+                         group = factor(ifelse(rnaseq_sample_id_conversion$type =="ctrl",0,1)))
+
+ddsObj.raw <- DESeqDataSetFromTximport(txi = txi,
+                                       colData = sampleinfo,
+                                       design = ~ group)
+
+keep <- rowSums(counts(ddsObj.raw) >= 10) >= 5
+#filter out transcripts where there are less than 5 samples with counts greater than or equal to 10
+#https://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pre-filtering
+dds <- ddsObj.raw[keep,]
+kept_rows <- row.names(assay(dds))
+
+```
+
+
+
+```{r }
+
+rna_expr_notlog <- rna_expr
+rna_expr <- apply(rna_expr, c(1,2), function(x){log2(x+1)})
+
+rna_expr_filt <- rna_expr[row.names(rna_expr) %in% kept_rows,]
+rna_expr_notlog_filt <- rna_expr_notlog[row.names(rna_expr_notlog) %in% kept_rows,]
+
+
+```
+
+
+```{r }
+
+rnaseq <- list(full = rna_expr_notlog,
+               filt = rna_expr_notlog_filt,
+               full_log2 = rna_expr,
+               filt_log2 = rna_expr_filt,
+               kept_rows = kept_rows)
+
+save(rnaseq, 
+     file="rdata/rna_seq.RData")
+
+
+
+```
+
+
+# Proteomics
+
+```{r }
+
+prot_expr_1_raw <- as.data.frame(read_xlsx("files/Data S1.xlsx",
+                                           sheet="Proteomics#1 (log2&normalized)"))
+
+prot_expr_2_raw <- as.data.frame(read_xlsx("files/Data S1.xlsx",
+                                           sheet="Proteomics#2 (log2&normalized)"))
+
+prot_expr_1_cleaned = prot_expr_1_raw[,6:ncol(prot_expr_1_raw)]
+row.names(prot_expr_1_cleaned) = prot_expr_1_raw$`Protein group`
+
+prot_expr_2_cleaned = prot_expr_2_raw[,6:ncol(prot_expr_2_raw)]
+row.names(prot_expr_2_cleaned) = prot_expr_2_raw$`Protein group`
+
+```
+
+
+```{r , fig.width=25, fig.height=10}
+
+detect_outlier_samples <- function(expr_matrix, threshold_z = -2.5) {
+  # Compute correlation between all pairs of samples (columns)
+  cor_matrix <- cor(as.matrix(expr_matrix), method = "pearson", use = "pairwise.complete.obs")
+  
+  # Compute mean correlation of each sample with all other samples (excluding self-correlation)
+  diag(cor_matrix) <- NA  # Remove self-correlation
+  sample_mean_cor <- rowMedians(cor_matrix, na.rm = TRUE)
+  
+  # Z-score transformation
+  z_scores <- as.numeric(scale(sample_mean_cor))
+  names(z_scores) <- names(sample_mean_cor)
+  
+  # Identify outliers
+  outlier_samples <- names(which(z_scores < threshold_z))
+  #print(outlier_samples)
+  
+  draw(Heatmap(cor_matrix, show_row_names = FALSE,
+               column_split = ifelse(colnames(cor_matrix)%in% outlier_samples,"Outliers","")))
+  
+  return(outlier_samples)
+}
+
+sample_annot_withrepl$potential_outlier <- ifelse(sample_annot_withrepl$replicate_id %in% c(detect_outlier_samples(prot_expr_1_cleaned, -3.5),
+                                                                                             detect_outlier_samples(prot_expr_2_cleaned, -3.5)),
+                                                  "yes","no")
+
+
+detect_outlier_samples(prot_expr_1_cleaned, -3.5)
+detect_outlier_samples(prot_expr_2_cleaned, -3.5)
+
+# the other potential outliers are mostly brain ctrl tissues, they should not be excluded. More exploratory analysis later.
+
+
+
+```
+
+
+
+```{r , fig.width=15, fig.height=5}
+
+ht = Heatmap(prot_expr_1_cleaned, cluster_rows = FALSE,show_row_names = FALSE,
+        height = unit(0.01,"mm"),
+        column_labels = gsub("SCLC-RA_","",colnames(prot_expr_1_cleaned)),
+        top_annotation = HeatmapAnnotation(highlight = ifelse(grepl("158_liver_ctrl_3",colnames(prot_expr_1_cleaned)),"*","-"),
+                                           col = colorlist,
+                                           show_legend = FALSE,
+                                          which="column"),
+        show_heatmap_legend = FALSE)
+ht
+
+export_heatmap_png(filename = "figs/qc_prot_cohort1_outlier", width = 15, height=5, ht_object=ht)
+
+
+```
+
+
+```{r , fig.width=25, fig.height=5}
+
+ht = Heatmap(prot_expr_2_cleaned, cluster_rows = FALSE,show_row_names = FALSE,
+        height = unit(0.01,"mm"),
+        column_labels = gsub("SCLC-RA_","",colnames(prot_expr_2_cleaned)),
+        top_annotation = HeatmapAnnotation(highlight = ifelse(grepl("153_peritoneal_ctrl",colnames(prot_expr_2_cleaned)),"*","-"),
+                                           col = colorlist,
+                                           show_legend = FALSE,
+                                          which="column"),
+        show_heatmap_legend = FALSE)
+ht
+
+export_heatmap_png(filename = "figs/qc_prot_cohort2_outlier.png", width = 25, height=5, ht_object=ht)
+
+
+```
+
+
+
+```{r }
+
+prot_expr_1_cleaned_nooutliers <- prot_expr_1_cleaned[,!colnames(prot_expr_1_cleaned) %in% "KSCLC158_liver_ctrl_3"]
+prot_expr_2_cleaned_nooutliers <- prot_expr_2_cleaned[,!colnames(prot_expr_2_cleaned) %in% c("KSCLC153_peritoneal_ctrl")]
+
+
+```
+
+
+
+# Merge the two tables
+```{r }
+
+prot_expr_1_cleaned_nooutliers_ordered_pgnames = prot_expr_1_cleaned_nooutliers
+row.names(prot_expr_1_cleaned_nooutliers_ordered_pgnames) = sapply(row.names(prot_expr_1_cleaned_nooutliers_ordered_pgnames), function(x){
+  pgs <- strsplit(x,split=";")[[1]]
+  return(paste(pgs[order(pgs)],collapse = ";"))
+})
+
+prot_expr_2_cleaned_nooutliers_ordered_pgnames = prot_expr_2_cleaned_nooutliers
+row.names(prot_expr_2_cleaned_nooutliers_ordered_pgnames) = sapply(row.names(prot_expr_2_cleaned_nooutliers_ordered_pgnames), function(x){
+  pgs <- strsplit(x,split=";")[[1]]
+  return(paste(pgs[order(pgs)],collapse = ";"))
+})
+
+
+both_isoforms <- merge(prot_expr_1_cleaned_nooutliers_ordered_pgnames,
+                        prot_expr_2_cleaned_nooutliers_ordered_pgnames, by="row.names",all=T)
+row.names(both_isoforms) <- both_isoforms$Row.names
+both_isoforms$Row.names <- NULL
+
+```
+
+
+```{r }
+
+nrow(both_isoforms)
+nrow(merge(prot_expr_1_cleaned_nooutliers,prot_expr_2_cleaned_nooutliers, by="row.names",all=F))
+
+```
+
+
+```{r }
+
+set.seed(250330)
+both_batchcorr <- removeBatchEffect(both_isoforms,
+                                    batch = sample_annot_withrepl[colnames(both_isoforms),
+                                                                  "cohort"])
+```
+
+
+```{r , fig.width=15, fig.height=8}
+
+topannot <- HeatmapAnnotation(df = sample_annot_withrepl[colnames(both_batchcorr),
+                                                        c(#"nonnormal_sum",
+                                                          "patient", "type",
+                                                          "origin", 
+                                                          "cohort")],
+                              col = colorlist,
+                              #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 12)),
+                              annotation_name_side = "left",
+                              #gap = unit(c(), 'mm'),
+                              #border = TRUE,
+                              gp = gpar(col = "lightgray",size=0.5),
+                              show_legend = TRUE,
+                              show_annotation_name = TRUE)
+
+
+
+ht <- draw(Heatmap(filter_missingvalues(both_batchcorr,50), top_annotation = topannot,
+        #column_split = gsub("subcutan","sub-\ncu-\ntan",gsub("cerebellum","cere-\nbel-\nlum",gsub("_","\n",gsub("peri","peri-\n",sample_annot_withrepl[colnames(cormat),"origin"])))),
+        #column_split = sample_annot_withrepl[colnames(cormat),"origin"],
+        name="Pearson\ncorr.",
+        #column_split = 2,
+        col = colorlist$corr3,
+        cluster_column_slices = FALSE,
+        cluster_rows = FALSE,
+        height = unit(0.001,"cm"),
+        width = unit(30,"cm"),
+        column_gap = unit(0.6,"cm"),
+        border = TRUE,
+        show_heatmap_legend = FALSE,
+        column_title_rot = 45,# = gpar(size=8),
+        show_column_names = FALSE,
+        show_row_names = FALSE),
+     annotation_legend_side="bottom",
+     heatmap_legend_side="bottom")
+ht
+
+export_heatmap_png(filename = "figs/qc_prot_batchcorr.png", width = 15, height=8, ht_object=ht)
+
+
+```
+
+
+
+```{r }
+sample_annot_withrepl$nr_quant_proteins = NA
+i=1
+#for (i in 1:ncol(prot_expr_1_cleaned)){
+#  sample_annot_withrepl[colnames(prot_expr_1_cleaned)[i],"nr_quant_proteins"] <- length(na.omit(as.vector(prot_expr_1_cleaned[,i])))
+#}
+#for (i in 1:ncol(prot_expr_2_cleaned)){
+#  sample_annot_withrepl[colnames(prot_expr_2_cleaned)[i],"nr_quant_proteins"] <- length(na.omit(as.vector(prot_expr_2_cleaned[,i])))
+#}
+
+for (i in 1:ncol(both_batchcorr)){
+  sample_annot_withrepl[colnames(both_batchcorr)[i],"nr_quant_proteins"] <- length(na.omit(as.vector(both_batchcorr[,i])))
+}
+
+quantile(sample_annot_withrepl$nr_quant_proteins, na.rm=T)
+
+```
+
+
+```{r }
+
+save(prot_expr_1_cleaned_nooutliers,
+     prot_expr_2_cleaned_nooutliers,
+     both_batchcorr,
+     file="rdata/proteomics.RData")
+
+```
+
+
+# IHC
+
+```{r}
+
+#load("/Users/szeitb01/Desktop/scripts/SCLC_rapid_autopsy/rdata/ihc.RData")
+#colnames(ihc$filt)
+
+ihc_raw <- as.data.frame(read_xlsx("files/Data S3.xlsx",
+                                                 sheet="IHC"))
+
+ihc = ihc_raw
+
+
+colnames(ihc) = c("ihc_sample_id" , 
+                      "ascl1_perc" , 
+                      "ascl1_int" , 
+                      "ascl1_h_score" , 
+                      "neurod1_perc" , 
+                      "neurod1_int" , 
+                      "neurod1_h_score" , 
+                      "pou2f3_perc" , 
+                      "pou2f3_int" , 
+                      "pou2f3_h_score" , 
+                      "yap1_perc", 
+                      "yap1_int" , 
+                      "yap1_h_score" , 
+                      "cd3_intra" , 
+                      "cd3_peri" , 
+                      "dll3_perc" , 
+                      "dll3_int" , 
+                      "dll3_h_score" , 
+                      "pd_l1_perc" , 
+                      "pd_l1_int" , 
+                      "pd_l1_h_score" , 
+                      "b7_h3_perc" , 
+                      "b7_h3_int" , 
+                      "b7_h3_h_score")
+
+
+save(ihc,
+     file="rdata/ihc.RData")
+
+```
+
+
+```{r}
+
+#loaded = load("/Users/szeitb01/Desktop/scripts/SCLC_rapid_autopsy/rdata/gene_protein_annotations.RData")
+#loaded
+
+#colnames(gene_annotation)
+#nrow(gene_annotation)
+
+gene_annotation = rna_raw[,c(1:4)]
+colnames(gene_annotation) = c("ensembl_gene_id","hgnc_symbol","ENTREZID","selected_entrez")
+row.names(gene_annotation) = gene_annotation$ensembl_gene_id
+
+gene_annotation[is.na(gene_annotation)] = ""
+
+#head(protein_annotation)
+
+protein_annotation = unique(rbind(prot_expr_1_raw[,c(1:5)],
+                           prot_expr_2_raw[,c(1:5)]))
+colnames(protein_annotation) = c("protein_group", "protein_group_ordered", "gene_names", "entrez_ids", "selected_entrez_first")
+row.names(protein_annotation) = protein_annotation$protein_group
+
+protein_annotation[is.na(protein_annotation)] = ""
+
+
+protein_annotation_nonredundant = unique(protein_annotation[,c("protein_group_ordered",
+                                                               "gene_names",
+                                                               "entrez_ids",
+                                                               "selected_entrez_first")])
+row.names(protein_annotation_nonredundant) = protein_annotation_nonredundant$protein_group_ordered
+
+
+
+save(gene_annotation,
+     protein_annotation,
+     protein_annotation_nonredundant,
+     file="rdata/gene_protein_annotations.RData")
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
