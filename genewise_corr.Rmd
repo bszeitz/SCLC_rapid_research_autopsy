@@ -656,10 +656,6 @@ cor_df_for_plot_reorganized <- merge(cor_df_for_plot_reorganized,
 
 
 
-
-source("helpers/color_list.R")
-
-
 cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor >=0.40, 
                                                   "positive", "not highlighted")
 cor_df_for_plot_reorganized$correlation <- ifelse(cor_df_for_plot_reorganized$cor <= -0.40, 
@@ -838,10 +834,6 @@ saveWorkbook(wb, file = "supplementary_tables/Table S2 - Gene-wise correlations.
 
 ```
 
-
-```{r }
-
-```
 
 
 

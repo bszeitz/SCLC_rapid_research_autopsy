@@ -3,6 +3,24 @@ title: "Create RData objects from Supplementary Data"
 author: "Bea Szeitz"
 ---
 
+Create folders for storing script outputs. Note: the "files" folder should already exist and contain Data S1-3
+```{r }
+if (!file.exists("files")) {
+  dir.create("files")
+}
+
+#if (!file.exists("rdata")) {
+#  dir.create("rdata")
+#}
+if (!file.exists("supplementary_tables")) {
+  dir.create("supplementary_tables")
+}
+if (!file.exists("figs")) {
+  dir.create("figs")
+}
+
+```
+
 ```{r }
 source("helpers/load_packages.R")
 source("helpers/utility_functions.R")
@@ -190,7 +208,7 @@ ht = Heatmap(prot_expr_2_cleaned, cluster_rows = FALSE,show_row_names = FALSE,
         show_heatmap_legend = FALSE)
 ht
 
-export_heatmap_png(filename = "figs/qc_prot_cohort2_outlier.png", width = 25, height=5, ht_object=ht)
+export_heatmap_png(filename = "figs/qc_prot_cohort2_outlier", width = 25, height=5, ht_object=ht)
 
 
 ```
@@ -286,7 +304,7 @@ ht <- draw(Heatmap(filter_missingvalues(both_batchcorr,50), top_annotation = top
      heatmap_legend_side="bottom")
 ht
 
-export_heatmap_png(filename = "figs/qc_prot_batchcorr.png", width = 15, height=8, ht_object=ht)
+export_heatmap_png(filename = "figs/qc_prot_batchcorr", width = 15, height=8, ht_object=ht)
 
 
 ```
@@ -406,31 +424,6 @@ save(gene_annotation,
 
 ```
 
-
-
-```{r}
-
-```
-
-
-
-
-
-
-```{r}
-
-```
-
-
-```{r}
-
-```
-
-
-
-```{r}
-
-```
 
 
 

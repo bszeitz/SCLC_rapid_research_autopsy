@@ -522,12 +522,10 @@ calculate_pooled_mad = function(expr_tab, patient_vector, sample_patient_match){
   
   mad_per_patient_df <- as.data.frame(do.call(cbind, mad_per_patient_list))
   
-  x=1
   mad_per_patient_df$pooled_mad <- sapply(seq(1,nrow(mad_per_patient_df)), function(x){
     
     gene <- row.names(mad_per_patient_df)[x]
     
-    z="KSCLC112"
     nr_samples <- sapply(patient_vector,function(z){
       length(na.omit(expr_tab[gene,colnames(expr_tab) %in% sample_patient_match[sample_patient_match$patient ==z,1]]))
     })

@@ -470,17 +470,3 @@ saveWorkbook(wb, file = "supplementary_tables/Table S7 - Stably expressed protei
 ```
 
 
-
-
-
-
-
-```{r }
-
-```
-
-
-
-```{r }
-
-```

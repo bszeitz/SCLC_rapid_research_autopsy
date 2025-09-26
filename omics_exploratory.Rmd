@@ -35,7 +35,6 @@ colnames(both_batchcorr)[!colnames(both_batchcorr) %in% sample_annot_withrepl$re
 
 ```{r , fig.width=4.5, fig.height=4.5}
 
-#Note: this table is not provided with the publication, should be skipped
 load("rdata/sample_overview_table.RData")
 
 # Add row annotations with a bar plot
@@ -207,8 +206,6 @@ sample_annot_withrepl$'quality_issue' <- ifelse(is.na(sample_annot_withrepl$qual
                                                 sample_annot_withrepl$'quality_issue')
 
 
-source("helpers/color_list.R")
-
 cormat <- cor(as.matrix(filter_missingvalues(both_batchcorr,10)), method = "pearson", use = "pairwise.complete.obs")
 
 histology = sample_annot_withrepl[,c("tumor","stroma","necrosis","normal")]
@@ -237,10 +234,7 @@ topannot <- HeatmapAnnotation(df = sample_annot_withrepl[colnames(cormat),
                                                        side = "left",
                                                        at = c(0.25,0.50,0.75), 
                                                        labels = c("25%","50%", "75%") )),
-                              #"Sample group" = anno_text(gsub("met_","",tumor_samples$sample_group), gp = gpar(fontsize = 12)),
                               annotation_name_side = "left",
-                              #gap = unit(c(), 'mm'),
-                              #border = TRUE,
                               gp = gpar(col = "lightgray",size=0.5),
                               show_legend = TRUE,
                               show_annotation_name = TRUE)
@@ -940,15 +934,3 @@ saveWorkbook(wb, file = "supplementary_tables/Table S4 - Histology associations.
 ```
 
 
-
-```{r }
-
-```
-
-
-
-
-
-```{r }
-
-```
